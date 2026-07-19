@@ -1,0 +1,19 @@
+<section class="form-page">
+  <div class="form-card">
+    <h2>Log In</h2>
+    <p class="sub">Athletes, gym admins, league operators, and GLG staff all log in here.</p>
+    <% if (error) { %><div class="form-error"><%= error %></div><% } %>
+    <form method="POST" action="/login">
+      <input type="hidden" name="next" value="<%= next %>">
+      <label>Email</label>
+      <input type="email" name="email" required>
+      <label>Password</label>
+      <input type="password" name="password" required>
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:1.6rem;">Log In</button>
+    </form>
+    <p class="helptext" style="margin-top:1.2rem;text-align:center;">
+      No account? <a href="/signup/athlete" style="color:var(--forest);font-weight:700;">Sign up as an athlete</a>
+      or <a href="/signup/gym" style="color:var(--forest);font-weight:700;">register your gym</a>.
+    </p>
+  </div>
+</section>

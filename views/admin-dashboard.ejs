@@ -1,0 +1,53 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin" class="active">Overview</a>
+    <a href="/profile">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">GLG HQ</div>
+    <h2>Admin Overview</h2>
+
+    <div class="grid grid-4" style="margin-top:1.2rem;">
+      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.users %></div><div style="color:var(--muted);font-size:.8rem;">Total Users</div></div>
+      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.gyms %></div><div style="color:var(--muted);font-size:.8rem;">Gyms Registered</div></div>
+      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.teams %></div><div style="color:var(--muted);font-size:.8rem;">Teams</div></div>
+      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.athletes %></div><div style="color:var(--muted);font-size:.8rem;">Athletes</div></div>
+    </div>
+
+    <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Pending League Operator Applications</h3>
+    <div class="table-wrap" style="margin-top:.8rem;">
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Application</th><th></th></tr>
+        <% if (pendingOperators.length === 0) { %>
+          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem;">No pending applications.</td></tr>
+        <% } %>
+        <% pendingOperators.forEach(o => { %>
+          <tr>
+            <td><%= o.first_name %> <%= o.last_name %></td>
+            <td style="color:var(--muted);"><%= o.email %></td>
+            <td style="white-space:pre-wrap;font-size:.8rem;max-width:300px;"><%= o.bio %></td>
+            <td style="display:flex;gap:.5rem;">
+              <form method="POST" action="/admin/operators/<%= o.id %>/approve"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
+              <form method="POST" action="/admin/operators/<%= o.id %>/reject" onsubmit="return confirm('Reject this application?')"><button class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);" type="submit">Reject</button></form>
+            </td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+
+    <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Regions</h3>
+    <div class="table-wrap" style="margin-top:.8rem;">
+      <table>
+        <tr><th>Name</th><th>Level</th><th>Status</th><th></th></tr>
+        <% regions.forEach(r => { %>
+          <tr>
+            <td><%= r.name %></td>
+            <td style="text-transform:capitalize;color:var(--muted);"><%= r.level %></td>
+            <td><span class="badge <%= r.status==='active' ? 'badge-live' : 'badge-soon' %>"><%= r.status %></span></td>
+            <td><% if (r.level==='region') { %><a href="/admin/region/<%= r.id %>" style="color:var(--forest);font-weight:700;font-size:.85rem;">Manage →</a><% } %></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+  </div>
+</div>

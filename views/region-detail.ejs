@@ -1,0 +1,64 @@
+<section class="guide-hero">
+  <div class="container">
+    <div class="hero-eyebrow">GLG Region</div>
+    <h1 style="font-size:2.8rem;"><%= region.name %></h1>
+    <p class="sub" style="margin:1rem auto 0;">Season 2026 · 6-week round robin · <%= teams.length %> teams</p>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-eyebrow">Standings</div>
+    <h2>Leaderboard</h2>
+    <div class="table-wrap" style="margin-top:1rem;">
+      <table>
+        <tr><th>Rank</th><th>Team</th><th>Played</th><th>Wins</th><th>Points</th></tr>
+        <% leaderboard.forEach((row, i) => { %>
+          <tr>
+            <td><%= i+1 %></td>
+            <td style="font-weight:600;"><%= row.team.name %></td>
+            <td><%= row.played %></td>
+            <td><%= row.wins %></td>
+            <td style="font-family:'Roboto Mono',monospace;font-weight:700;color:var(--forest);"><%= row.points %></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+  </div>
+</section>
+
+<section class="section" style="background:#fff;border-top:1px solid var(--border);">
+  <div class="container">
+    <div class="section-eyebrow">Teams</div>
+    <h2>Competing Teams</h2>
+    <div class="grid grid-2" style="margin-top:1rem;">
+      <% teams.forEach(t => { %>
+        <div class="card">
+          <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:1.1rem;color:var(--forest);"><%= t.name %></div>
+          <div style="font-size:.82rem;color:var(--muted);margin-top:.2rem;"><%= t.gym_name %></div>
+        </div>
+      <% }) %>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-eyebrow">Schedule</div>
+    <h2>6-Week Fixture List</h2>
+    <div class="table-wrap" style="margin-top:1rem;">
+      <table>
+        <tr><th>Week</th><th>Date</th><th>Fixture</th><th>Status</th><th></th></tr>
+        <% fixtures.forEach(f => { %>
+          <tr>
+            <td>Week <%= f.week %></td>
+            <td><%= f.match_date %></td>
+            <td><%= f.team_a_name %> vs <%= f.team_b_name %></td>
+            <td><span class="badge <%= f.status==='complete' ? 'badge-live' : 'badge-soon' %>"><%= f.status %></span></td>
+            <td><a href="/cast/<%= f.id %>" target="_blank" style="font-size:.8rem;color:var(--forest);font-weight:700;">Cast Display →</a></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+  </div>
+</section>

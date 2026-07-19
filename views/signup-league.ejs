@@ -1,0 +1,27 @@
+<section class="form-page">
+  <div class="form-card">
+    <h2>Run a Region</h2>
+    <p class="sub">Apply to become a GLG League Franchise Operator — bring the competition to your area.</p>
+
+    <% if (success) { %>
+      <div class="form-success">Application received! Our team will review and be in touch. You'll be able to log in once approved.</div>
+    <% } else { %>
+      <% if (error) { %><div class="form-error"><%= error %></div><% } %>
+      <form method="POST" action="/signup/league">
+        <div class="grid grid-2" style="gap:.8rem;">
+          <div><label>First Name</label><input type="text" name="first_name" required></div>
+          <div><label>Last Name</label><input type="text" name="last_name" required></div>
+        </div>
+        <label>Email</label>
+        <input type="email" name="email" required>
+        <label>Password</label>
+        <input type="password" name="password" required minlength="6">
+        <label>Proposed Region</label>
+        <input type="text" name="proposed_region" required placeholder="e.g. Melbourne Inner North">
+        <label>Tell us about yourself and why this region</label>
+        <textarea name="pitch" rows="5" placeholder="Your background, existing gym relationships, why you'd be a great operator..."></textarea>
+        <button type="submit" class="btn btn-primary" style="width:100%;margin-top:1.6rem;">Submit Application</button>
+      </form>
+    <% } %>
+  </div>
+</section>

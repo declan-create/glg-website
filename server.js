@@ -1,0 +1,595 @@
+const express = require('express');
+const session = require('express-session');
+const FileStore = require('session-file-store')(session);
+const bcrypt = require('bcryptjs');
+const path = require('path');
+const expressLayouts = require('express-ejs-layouts');
+const helmet = require('helmet');
+const rateLimit = require('express-rate-limit');
+const db = require('./db');
+const scoring = require('./scoring');
+
+const app = express();
+const PORT = process.env.PORT || 3000;
+
+// Security headers. CSP relaxed for inline styles/scripts used throughout the
+// EJS views (no external script sources are loaded, so this stays reasonably tight).
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'", "'unsafe-inline'"],
+      imgSrc: ["'self'", "data:"],
+      fontSrc: ["'self'"],
+    },
+  },
+}));
+
+// Rate limit login and every sign-up form to blunt credential-stuffing / spam
+// sign-ups. Generous enough not to bother a genuine user who mistypes a
+// password a couple of times.
+const authLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: 'Too many attempts from this device — please wait 15 minutes and try again.',
+});
+
+// ---- lightweight input validation (no external dependency needed for this scope) ----
+const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function isValidEmail(email) { return typeof email === 'string' && email.length <= 254 && EMAIL_RE.test(email.trim()); }
+function isReasonableLength(str, max = 200) { return typeof str === 'string' && str.trim().length > 0 && str.trim().length <= max; }
+function isValidPassword(pw) { return typeof pw === 'string' && pw.length >= 6 && pw.length <= 200; }
+
+app.set('view engine', 'ejs');
+app.set('views', path.join(__dirname, 'views'));
+app.use(expressLayouts);
+app.set('layout', 'layout');
+
+app.use(express.urlencoded({ extended: true }));
+app.use(express.json());
+app.use(express.static(path.join(__dirname, 'public')));
+
+const fs = require('fs');
+
+app.use(session({
+  store: (() => {
+    const sessionsPath = process.env.GLG_SESSIONS_PATH || path.join(__dirname, 'sessions');
+    fs.mkdirSync(sessionsPath, { recursive: true }); // ensure it exists on any host — empty folders don't survive git
+    return new FileStore({ path: sessionsPath });
+  })(),
+  secret: process.env.SESSION_SECRET || 'glg-dev-secret-change-in-prod',
+  resave: false,
+  saveUninitialized: false,
+  cookie: { maxAge: 1000 * 60 * 60 * 24 * 7 }, // 7 days
+}));
+
+// ---- make current user + flash-ish messages available in all views ----
+app.use((req, res, next) => {
+  res.locals.currentUser = req.session.user || null;
+  res.locals.query = req.query;
+  next();
+});
+
+function requireLogin(req, res, next) {
+  if (!req.session.user) return res.redirect('/login?next=' + encodeURIComponent(req.originalUrl));
+  next();
+}
+function requireRole(...roles) {
+  return (req, res, next) => {
+    if (!req.session.user || !roles.includes(req.session.user.role)) {
+      return res.status(403).render('error', { title: 'Access Denied', message: "You don't have permission to view this page.", layout: 'layout' });
+    }
+    next();
+  };
+}
+
+// ============ PUBLIC ROUTES ============
+
+app.get('/', (req, res) => {
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region' ORDER BY status='active' DESC, name").all();
+  res.render('home', { title: 'Gym League Global', regions });
+});
+
+app.get('/regions', (req, res) => {
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region' ORDER BY status='active' DESC, name").all();
+  res.render('regions', { title: 'Find Your Region', regions });
+});
+
+app.get('/regions/:slug', (req, res) => {
+  const region = db.prepare("SELECT * FROM regions WHERE slug=?").get(req.params.slug);
+  if (!region) return res.status(404).render('error', { title: 'Not Found', message: 'Region not found.' });
+  const teams = db.prepare("SELECT t.*, g.name as gym_name FROM teams t JOIN gyms g ON g.id=t.gym_id WHERE t.region_id=?").all(region.id);
+  const fixtures = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id
+    WHERE f.region_id=? ORDER BY f.week`).all(region.id);
+  const leaderboard = scoring.getSeasonLeaderboard(region.id);
+  res.render('region-detail', { title: region.name, region, teams, fixtures, leaderboard });
+});
+
+// ---- Guides ----
+app.get('/guide/participant', (req, res) => res.render('guide-participant', { title: 'Participant Guide' }));
+app.get('/guide/gym', (req, res) => res.render('guide-gym', { title: 'Gym Operator Guide' }));
+app.get('/guide/league', (req, res) => res.render('guide-league', { title: 'League Franchise Guide' }));
+
+// ============ AUTH ============
+
+app.get('/login', (req, res) => res.render('login', { title: 'Log In', error: null, next: req.query.next || '/' }));
+
+app.post('/login', authLimiter, (req, res) => {
+  const { email, password, next } = req.body;
+  if (!isValidEmail(email) || typeof password !== 'string' || password.length === 0) {
+    return res.render('login', { title: 'Log In', error: 'Please enter a valid email and password.', next: next || '/' });
+  }
+  const user = db.prepare("SELECT * FROM users WHERE email=?").get(email.trim().toLowerCase());
+  if (!user || !bcrypt.compareSync(password, user.password_hash)) {
+    return res.render('login', { title: 'Log In', error: 'Incorrect email or password.', next: next || '/' });
+  }
+  if (user.role === 'league_operator' && !user.approved) {
+    return res.render('login', { title: 'Log In', error: 'Your league operator application is still pending approval.', next: '/' });
+  }
+  req.session.user = { id: user.id, email: user.email, role: user.role, first_name: user.first_name, last_name: user.last_name };
+  const dest = next && next !== 'undefined' ? next : roleHome(user.role);
+  res.redirect(dest);
+});
+
+app.get('/logout', (req, res) => { req.session.destroy(() => res.redirect('/')); });
+
+function roleHome(role) {
+  if (role === 'admin') return '/admin';
+  if (role === 'gym_admin') return '/gym';
+  if (role === 'league_operator') return '/league';
+  return '/profile';
+}
+
+// ---- Athlete signup ----
+app.get('/signup/athlete', (req, res) => {
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region' AND status='active'").all();
+  res.render('signup-athlete', { title: 'Athlete Sign Up', regions, error: null, step: 1 });
+});
+
+app.post('/signup/athlete', authLimiter, (req, res) => {
+  const { first_name, last_name, email, password, gender, dob, region_id, team_choice, team_id } = req.body;
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region' AND status='active'").all();
+
+  if (!isReasonableLength(first_name, 80) || !isReasonableLength(last_name, 80)) {
+    return res.render('signup-athlete', { title: 'Athlete Sign Up', regions, error: 'Please enter a valid first and last name.', step: 1 });
+  }
+  if (!isValidEmail(email)) {
+    return res.render('signup-athlete', { title: 'Athlete Sign Up', regions, error: 'Please enter a valid email address.', step: 1 });
+  }
+  if (!isValidPassword(password)) {
+    return res.render('signup-athlete', { title: 'Athlete Sign Up', regions, error: 'Password must be at least 6 characters.', step: 1 });
+  }
+  if (gender !== 'M' && gender !== 'F') {
+    return res.render('signup-athlete', { title: 'Athlete Sign Up', regions, error: 'Please select a gender.', step: 1 });
+  }
+  const regionValid = regions.some(r => String(r.id) === String(region_id));
+  if (!regionValid) {
+    return res.render('signup-athlete', { title: 'Athlete Sign Up', regions, error: 'Please select a valid region.', step: 1 });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE email=?").get(email.trim().toLowerCase());
+  if (existing) {
+    return res.render('signup-athlete', { title: 'Athlete Sign Up', regions, error: 'An account with that email already exists.', step: 1 });
+  }
+
+  const hash = bcrypt.hashSync(password, 10);
+  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,gender,dob) VALUES (?,?,?,?,?,?,?)`)
+    .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender, dob || null).lastInsertRowid;
+
+  const wantsTeam = team_choice === 'assign' ? 1 : 0;
+  const chosenTeamId = team_choice === 'pick' && team_id ? team_id : null;
+  db.prepare(`INSERT INTO athletes (user_id, region_id, team_id, wants_team) VALUES (?,?,?,?)`)
+    .run(uid, region_id, chosenTeamId, wantsTeam);
+
+  req.session.user = { id: uid, email: email.trim().toLowerCase(), role: 'athlete', first_name: first_name.trim(), last_name: last_name.trim() };
+  res.redirect('/profile?welcome=1');
+});
+
+// endpoint used by the signup form to load teams for a chosen region (AJAX)
+app.get('/api/regions/:id/teams', (req, res) => {
+  const teams = db.prepare("SELECT id, name FROM teams WHERE region_id=? ORDER BY name").all(req.params.id);
+  res.json(teams);
+});
+
+// ---- Gym signup ----
+app.get('/signup/gym', (req, res) => {
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region'").all();
+  res.render('signup-gym', { title: 'Gym / Club Sign Up', regions, error: null });
+});
+
+app.post('/signup/gym', authLimiter, (req, res) => {
+  const { gym_name, admin_first_name, admin_last_name, email, password, region_id, address, team_names } = req.body;
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region'").all();
+
+  if (!isReasonableLength(gym_name, 120)) {
+    return res.render('signup-gym', { title: 'Gym / Club Sign Up', regions, error: 'Please enter your gym or club name.' });
+  }
+  if (!isValidEmail(email)) {
+    return res.render('signup-gym', { title: 'Gym / Club Sign Up', regions, error: 'Please enter a valid email address.' });
+  }
+  if (!isValidPassword(password)) {
+    return res.render('signup-gym', { title: 'Gym / Club Sign Up', regions, error: 'Password must be at least 6 characters.' });
+  }
+  const regionValid = regions.some(r => String(r.id) === String(region_id));
+  if (!regionValid) {
+    return res.render('signup-gym', { title: 'Gym / Club Sign Up', regions, error: 'Please select a valid region.' });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE email=?").get(email.trim().toLowerCase());
+  if (existing) {
+    return res.render('signup-gym', { title: 'Gym / Club Sign Up', regions, error: 'An account with that email already exists.' });
+  }
+
+  const hash = bcrypt.hashSync(password, 10);
+  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name) VALUES (?,?,?,?,?)`)
+    .run(email.trim().toLowerCase(), hash, 'gym_admin', (admin_first_name || gym_name).trim().slice(0,80), (admin_last_name || '').trim().slice(0,80)).lastInsertRowid;
+
+  const gymId = db.prepare(`INSERT INTO gyms (name, region_id, admin_user_id, address) VALUES (?,?,?,?)`)
+    .run(gym_name.trim().slice(0,120), region_id, uid, address ? address.trim().slice(0,200) : null).lastInsertRowid;
+
+  // Allow comma-separated team names, creating 1+ teams at signup (flexibility: 1 gym -> many teams).
+  // Capped at 20 teams and 80 chars per name at signup time to prevent abuse — more can be added later from the dashboard.
+  const names = (team_names || gym_name + ' Team A').split(',').map(s => s.trim()).filter(Boolean).slice(0, 20);
+  for (const n of names) {
+    db.prepare(`INSERT INTO teams (name, gym_id, region_id) VALUES (?,?,?)`).run(n.slice(0,80), gymId, region_id);
+  }
+
+  req.session.user = { id: uid, email: email.trim().toLowerCase(), role: 'gym_admin', first_name: admin_first_name, last_name: admin_last_name };
+  res.redirect('/gym?welcome=1');
+});
+
+// ---- League Franchise Operator application ----
+app.get('/signup/league', (req, res) => {
+  res.render('signup-league', { title: 'Apply to Run a Region', error: null, success: false });
+});
+
+app.post('/signup/league', authLimiter, (req, res) => {
+  const { first_name, last_name, email, password, proposed_region, pitch } = req.body;
+  if (!isReasonableLength(first_name, 80) || !isReasonableLength(last_name, 80)) {
+    return res.render('signup-league', { title: 'Apply to Run a Region', error: 'Please enter a valid first and last name.', success: false });
+  }
+  if (!isValidEmail(email)) {
+    return res.render('signup-league', { title: 'Apply to Run a Region', error: 'Please enter a valid email address.', success: false });
+  }
+  if (!isValidPassword(password)) {
+    return res.render('signup-league', { title: 'Apply to Run a Region', error: 'Password must be at least 6 characters.', success: false });
+  }
+  if (!isReasonableLength(proposed_region, 120)) {
+    return res.render('signup-league', { title: 'Apply to Run a Region', error: 'Please tell us which region you\'re proposing.', success: false });
+  }
+  const existing = db.prepare("SELECT id FROM users WHERE email=?").get(email.trim().toLowerCase());
+  if (existing) {
+    return res.render('signup-league', { title: 'Apply to Run a Region', error: 'An account with that email already exists.', success: false });
+  }
+  const hash = bcrypt.hashSync(password, 10);
+  const safePitch = (pitch || '').trim().slice(0, 2000);
+  db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,bio,approved) VALUES (?,?,?,?,?,?,0)`)
+    .run(email.trim().toLowerCase(), hash, 'league_operator', first_name.trim().slice(0,80), last_name.trim().slice(0,80), `Proposed region: ${proposed_region.trim().slice(0,120)}\n\n${safePitch}`);
+  res.render('signup-league', { title: 'Apply to Run a Region', error: null, success: true });
+});
+
+// ============ ATHLETE PROFILE ============
+
+app.get('/profile', requireLogin, (req, res) => {
+  if (req.session.user.role !== 'athlete') return res.redirect(roleHome(req.session.user.role));
+  const user = db.prepare("SELECT * FROM users WHERE id=?").get(req.session.user.id);
+  const athlete = db.prepare("SELECT * FROM athletes WHERE user_id=?").get(user.id);
+  const team = athlete.team_id ? db.prepare("SELECT t.*, g.name as gym_name FROM teams t JOIN gyms g ON g.id=t.gym_id WHERE t.id=?").get(athlete.team_id) : null;
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(athlete.region_id);
+
+  // personal stats history — joined via the athlete's category, since scoring is
+  // recorded per category (their own result if singles, their pair's shared
+  // result if doubles/mixed). Individual raw effort is always visible here,
+  // independent of how the match's points landed.
+  const history = athlete.category ? db.prepare(`
+    SELECT cr.raw_value, cr.points, cr.recorded_at, e.name as exercise_name, e.unit, f.week
+    FROM category_results cr
+    JOIN exercises e ON e.id=cr.exercise_id
+    JOIN fixtures f ON f.id=cr.fixture_id
+    WHERE cr.team_id=? AND cr.category=? ORDER BY f.week DESC
+  `).all(athlete.team_id, athlete.category) : [];
+
+  res.render('profile', { title: 'My Profile', user, athlete, team, region, history, welcome: req.query.welcome });
+});
+
+app.post('/profile', requireLogin, (req, res) => {
+  const { first_name, last_name, phone, bio } = req.body;
+  db.prepare("UPDATE users SET first_name=?, last_name=?, phone=?, bio=? WHERE id=?")
+    .run(first_name, last_name, phone, bio, req.session.user.id);
+  req.session.user.first_name = first_name;
+  req.session.user.last_name = last_name;
+  res.redirect('/profile?saved=1');
+});
+
+// ============ GYM ADMIN DASHBOARD ============
+
+app.get('/gym', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const teams = db.prepare("SELECT * FROM teams WHERE gym_id=?").all(gym.id);
+  const teamIds = teams.map(t => t.id);
+  const rosterCounts = {};
+  for (const t of teams) {
+    rosterCounts[t.id] = db.prepare("SELECT COUNT(*) c FROM athletes WHERE team_id=?").get(t.id).c;
+  }
+  // unassigned pool in this gym's region
+  const pool = db.prepare(`
+    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email
+    FROM athletes a JOIN users u ON u.id=a.user_id
+    WHERE a.region_id=? AND a.team_id IS NULL AND a.wants_team=1
+  `).all(gym.region_id);
+
+  res.render('gym-dashboard', { title: gym.name, gym, teams, rosterCounts, pool, welcome: req.query.welcome });
+});
+
+app.post('/gym/teams/new', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const { name, division } = req.body;
+  if (name && name.trim()) {
+    db.prepare("INSERT INTO teams (name, gym_id, region_id, division) VALUES (?,?,?,?)")
+      .run(name.trim(), gym.id, gym.region_id, division || 'Open');
+  }
+  res.redirect('/gym');
+});
+
+app.post('/gym/pool/assign', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const { athlete_id, team_id } = req.body;
+  // verify the team belongs to this gym
+  const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(team_id, gym.id);
+  if (team) {
+    db.prepare("UPDATE athletes SET team_id=?, wants_team=0 WHERE id=?").run(team_id, athlete_id);
+  }
+  res.redirect('/gym');
+});
+
+app.get('/gym/team/:id', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
+  if (!team) return res.status(404).render('error', { title: 'Not Found', message: 'Team not found.' });
+  const roster = db.prepare(`
+    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, a.category
+    FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=?`).all(team.id);
+  res.render('gym-team-detail', { title: team.name, team, roster, gym });
+});
+
+app.post('/gym/team/:id/remove-athlete', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
+  if (team) {
+    db.prepare("UPDATE athletes SET team_id=NULL, wants_team=1, category=NULL WHERE id=? AND team_id=?").run(req.body.athlete_id, team.id);
+  }
+  res.redirect('/gym/team/' + req.params.id);
+});
+
+app.post('/gym/team/:id/set-category', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
+  const { athlete_id, category } = req.body;
+  const validCategories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles', ''];
+  if (team && validCategories.includes(category)) {
+    // verify the athlete belongs to this team
+    const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND team_id=?").get(athlete_id, team.id);
+    if (athlete) {
+      db.prepare("UPDATE athletes SET category=? WHERE id=?").run(category || null, athlete_id);
+    }
+  }
+  res.redirect('/gym/team/' + req.params.id);
+});
+
+// ---- Fixtures & results entry (gym admin can enter results for their own team's fixtures) ----
+app.get('/gym/fixtures', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const teamIds = db.prepare("SELECT id FROM teams WHERE gym_id=?").all(gym.id).map(t => t.id);
+  if (teamIds.length === 0) return res.render('gym-fixtures', { title: 'Fixtures', fixtures: [] });
+  const placeholders = teamIds.map(() => '?').join(',');
+  const fixtures = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id
+    WHERE f.team_a_id IN (${placeholders}) OR f.team_b_id IN (${placeholders})
+    ORDER BY f.week
+  `).all(...teamIds, ...teamIds);
+  res.render('gym-fixtures', { title: 'Fixtures', fixtures });
+});
+
+function canManageFixture(user, fixture) {
+  if (!user) return false;
+  if (user.role === 'admin') return true;
+  if (user.role !== 'gym_admin') return false;
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(user.id);
+  if (!gym) return false;
+  const teamIds = db.prepare("SELECT id FROM teams WHERE gym_id=?").all(gym.id).map(t => t.id);
+  return teamIds.includes(fixture.team_a_id) || teamIds.includes(fixture.team_b_id);
+}
+
+app.get('/fixture/:id/results', requireLogin, (req, res) => {
+  const fixture = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.id);
+  if (!fixture) return res.status(404).render('error', { title: 'Not Found', message: 'Fixture not found.' });
+  if (!canManageFixture(req.session.user, fixture)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You can only manage results for your own gym's fixtures." });
+  }
+
+  const gates = db.prepare("SELECT * FROM gates ORDER BY number").all();
+  const exercises = db.prepare("SELECT * FROM exercises ORDER BY gate_id, sort_order").all();
+
+  const categoryLabel = {
+    mens_singles: "Men's Singles", womens_singles: "Women's Singles",
+    mens_doubles: "Men's Doubles", womens_doubles: "Women's Doubles", mixed_doubles: "Mixed Doubles",
+  };
+
+  // who's competing in each category, per team (for display — names only, scoring stays category-level)
+  const athletesFor = (teamId) => db.prepare(
+    "SELECT category, first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category IS NOT NULL"
+  ).all(teamId).reduce((acc, a) => { (acc[a.category] ||= []).push(`${a.first_name} ${a.last_name}`); return acc; }, {});
+
+  const namesA = athletesFor(fixture.team_a_id);
+  const namesB = athletesFor(fixture.team_b_id);
+
+  const catResults = db.prepare("SELECT * FROM category_results WHERE fixture_id=?").all(fixture.id);
+  const resultMap = {};
+  for (const r of catResults) resultMap[`${r.team_id}_${r.exercise_id}_${r.category}`] = r;
+
+  const g4Results = db.prepare("SELECT * FROM category_gate4_results WHERE fixture_id=?").all(fixture.id);
+  const g4Map = {};
+  for (const r of g4Results) g4Map[`${r.team_id}_${r.category}`] = r;
+
+  res.render('fixture-results', {
+    title: `Week ${fixture.week} Results`, fixture, gates, exercises,
+    categoryLabel, namesA, namesB, resultMap, g4Map,
+  });
+});
+
+app.post('/fixture/:id/results', requireLogin, (req, res) => {
+  const fixtureId = req.params.id;
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(fixtureId);
+  if (!fixture) return res.status(404).render('error', { title: 'Not Found', message: 'Fixture not found.' });
+  if (!canManageFixture(req.session.user, fixture)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You can only manage results for your own gym's fixtures." });
+  }
+  const body = req.body;
+  const categories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles'];
+
+  const exercises = db.prepare("SELECT e.*, g.is_sprint_finish FROM exercises e JOIN gates g ON g.id=e.gate_id").all();
+
+  const upsertCategoryResult = (fixtureId, exerciseId, teamId, category, rawValue) => {
+    const existing = db.prepare("SELECT id FROM category_results WHERE fixture_id=? AND exercise_id=? AND team_id=? AND category=?")
+      .get(fixtureId, exerciseId, teamId, category);
+    if (existing) {
+      db.prepare("UPDATE category_results SET raw_value=? WHERE id=?").run(rawValue, existing.id);
+    } else {
+      db.prepare("INSERT INTO category_results (fixture_id, exercise_id, team_id, category, raw_value) VALUES (?,?,?,?,?)")
+        .run(fixtureId, exerciseId, teamId, category, rawValue);
+    }
+  };
+
+  for (const ex of exercises) {
+    if (ex.is_sprint_finish) continue;
+    for (const teamId of [fixture.team_a_id, fixture.team_b_id]) {
+      for (const category of categories) {
+        const key = `result_${teamId}_${ex.id}_${category}`;
+        if (body[key] !== undefined && body[key] !== '') {
+          upsertCategoryResult(fixtureId, ex.id, teamId, category, parseFloat(body[key]));
+        }
+      }
+    }
+  }
+
+  // Gate 4 (sprint finish) — per category, per team
+  for (const teamId of [fixture.team_a_id, fixture.team_b_id]) {
+    for (const category of categories) {
+      const completedKey = `g4_${teamId}_${category}_completed`;
+      const timeKey = `g4_${teamId}_${category}_time`;
+      if (body[completedKey] !== undefined) {
+        const completed = body[completedKey] === 'on' || body[completedKey] === '1' ? 1 : 0;
+        const time = body[timeKey] ? parseFloat(body[timeKey]) : null;
+        const existing = db.prepare("SELECT id FROM category_gate4_results WHERE fixture_id=? AND team_id=? AND category=?").get(fixtureId, teamId, category);
+        if (existing) {
+          db.prepare("UPDATE category_gate4_results SET completed=?, total_time_sec=? WHERE id=?").run(completed, time, existing.id);
+        } else {
+          db.prepare("INSERT INTO category_gate4_results (fixture_id, team_id, category, completed, total_time_sec) VALUES (?,?,?,?,?)")
+            .run(fixtureId, teamId, category, completed, time);
+        }
+      }
+    }
+  }
+
+  scoring.recomputeFixtureScores(fixtureId);
+  db.prepare("UPDATE fixtures SET status='complete' WHERE id=?").run(fixtureId);
+
+  res.redirect(`/fixture/${fixtureId}/results?saved=1`);
+});
+
+// ============ CAST / TV DISPLAY (public, no login needed - gyms just load the URL on a screen) ============
+
+app.get('/cast/:fixtureId', (req, res) => {
+  const fixture = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.fixtureId);
+  if (!fixture) return res.status(404).send('Fixture not found');
+  const gates = db.prepare("SELECT * FROM gates ORDER BY number").all();
+  const exercises = db.prepare("SELECT * FROM exercises ORDER BY gate_id, sort_order").all();
+
+  const categoryLabel = {
+    mens_singles: "Men's Singles", womens_singles: "Women's Singles",
+    mens_doubles: "Men's Doubles", womens_doubles: "Women's Doubles", mixed_doubles: "Mixed Doubles",
+  };
+  const groupedFor = (teamId) => {
+    const rows = db.prepare(
+      "SELECT category, first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category IS NOT NULL"
+    ).all(teamId);
+    const grouped = {};
+    for (const r of rows) (grouped[r.category] ||= []).push(`${r.first_name} ${r.last_name}`);
+    return grouped;
+  };
+
+  res.render('cast', { title: 'Live Display', layout: false, fixture, gates, exercises,
+    groupedA: groupedFor(fixture.team_a_id), groupedB: groupedFor(fixture.team_b_id), categoryLabel });
+});
+
+// ============ ADMIN ============
+
+app.get('/admin', requireLogin, requireRole('admin'), (req, res) => {
+  const stats = {
+    users: db.prepare("SELECT COUNT(*) c FROM users").get().c,
+    gyms: db.prepare("SELECT COUNT(*) c FROM gyms").get().c,
+    teams: db.prepare("SELECT COUNT(*) c FROM teams").get().c,
+    athletes: db.prepare("SELECT COUNT(*) c FROM athletes").get().c,
+    fixtures: db.prepare("SELECT COUNT(*) c FROM fixtures").get().c,
+  };
+  const pendingOperators = db.prepare("SELECT * FROM users WHERE role='league_operator' AND approved=0").all();
+  const regions = db.prepare("SELECT * FROM regions ORDER BY level, name").all();
+  res.render('admin-dashboard', { title: 'GLG Admin', stats, pendingOperators, regions });
+});
+
+app.post('/admin/operators/:id/approve', requireLogin, requireRole('admin'), (req, res) => {
+  db.prepare("UPDATE users SET approved=1 WHERE id=?").run(req.params.id);
+  res.redirect('/admin');
+});
+
+app.post('/admin/operators/:id/reject', requireLogin, requireRole('admin'), (req, res) => {
+  db.prepare("DELETE FROM users WHERE id=? AND role='league_operator'").run(req.params.id);
+  res.redirect('/admin');
+});
+
+app.get('/admin/region/:id', requireLogin, requireRole('admin'), (req, res) => {
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(req.params.id);
+  const teams = db.prepare("SELECT t.*, g.name as gym_name FROM teams t JOIN gyms g ON g.id=t.gym_id WHERE t.region_id=?").all(region.id);
+  const fixtures = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.region_id=? ORDER BY f.week`).all(region.id);
+  res.render('admin-region', { title: region.name, region, teams, fixtures });
+});
+
+// ============ LEAGUE OPERATOR DASHBOARD (placeholder home once approved) ============
+app.get('/league', requireLogin, requireRole('league_operator'), (req, res) => {
+  res.render('league-dashboard', { title: 'League Operator' });
+});
+
+// ============ 404 ============
+app.use((req, res) => {
+  res.status(404).render('error', { title: 'Not Found', message: "That page doesn't exist." });
+});
+
+// ============ ERROR HANDLER ============
+// Catches anything that goes wrong in any route and logs the full detail to
+// the console (visible in Railway's Deployments → Logs tab) so a crash is
+// diagnosable from the hosting dashboard rather than a blank "Internal Server
+// Error" with no trail to follow.
+app.use((err, req, res, next) => {
+  console.error('UNHANDLED ERROR on', req.method, req.originalUrl);
+  console.error(err.stack || err);
+  res.status(500).render('error', {
+    title: 'Something Went Wrong',
+    message: "We hit a snag loading this page. It's been logged — please try again shortly.",
+  });
+});
+
+if (require.main === module) {
+  app.listen(PORT, () => console.log(`GLG app running on http://localhost:${PORT}`));
+}
+
+module.exports = app;

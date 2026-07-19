@@ -1,0 +1,86 @@
+<section class="hero">
+  <div class="container">
+    <div class="hero-eyebrow">Season 2026 · Now Recruiting</div>
+    <h1>Gym vs gym.<br><span class="accent">Head to head.</span></h1>
+    <p class="sub">A six-week competitive fitness league where gyms, run clubs, and training crews go head to head across four gates of real, measurable performance. Real scores. Real standings. Real community.</p>
+    <div class="hero-ctas">
+      <a href="/signup/athlete" class="btn btn-primary">Sign Up to Compete</a>
+      <a href="/signup/gym" class="btn btn-outline">Register Your Gym</a>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-eyebrow">How It Works</div>
+    <h2>Four gates. One season. Real bragging rights.</h2>
+    <p class="lede">Every team competes head-to-head across four physical gates. Hit the benchmark, beat your opponent, and stack points across a six-week season.</p>
+
+    <div class="grid grid-4">
+      <div class="step">
+        <div class="step-num"><span>1</span></div>
+        <div><h4>Sign Up</h4><p>Join as an individual and pick a team, or ask to be assigned. Or register your whole gym.</p></div>
+      </div>
+      <div class="step">
+        <div class="step-num"><span>2</span></div>
+        <div><h4>Get Scheduled</h4><p>Your region runs a 6-week round robin. Every team plays every other team.</p></div>
+      </div>
+      <div class="step">
+        <div class="step-num"><span>3</span></div>
+        <div><h4>Compete Live</h4><p>Four gates, three exercises each, one all-out sprint finish. Hit the benchmark, beat your rival.</p></div>
+      </div>
+      <div class="step">
+        <div class="step-num"><span>4</span></div>
+        <div><h4>Climb the Table</h4><p>Points accumulate into a season leaderboard. Stats and personal bests tracked every week.</p></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="section" style="background:#fff;border-top:1px solid var(--border);border-bottom:1px solid var(--border);">
+  <div class="container">
+    <div class="section-eyebrow">Scoring</div>
+    <h2>Simple to follow, hard to master.</h2>
+    <p class="lede">Gates 1–3 test three exercises each. Gate 4 is winner-take-all.</p>
+    <div class="grid grid-2">
+      <div class="card">
+        <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);font-size:1.1rem;margin-bottom:.6rem;">Gates 1–3</h4>
+        <p style="color:var(--muted);font-size:.9rem;margin-bottom:.8rem;">Per exercise: <strong style="color:var(--ink);">+1 point</strong> for hitting the benchmark, <strong style="color:var(--ink);">+1 more</strong> for beating your opponent. Miss the benchmark and you score zero for that exercise, no matter what.</p>
+        <span class="pill">Max 2 pts per exercise</span>
+      </div>
+      <div class="card">
+        <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);font-size:1.1rem;margin-bottom:.6rem;">Gate 4 · Sprint Finish</h4>
+        <p style="color:var(--muted);font-size:.9rem;margin-bottom:.8rem;">All three exercises combined into one sprint. <strong style="color:var(--ink);">+3 points</strong> for finishing, <strong style="color:var(--ink);">+3 more</strong> for being fastest. Winner takes all.</p>
+        <span class="pill">Max 6 pts</span>
+      </div>
+    </div>
+    <div style="text-align:center;margin-top:1.5rem;">
+      <a href="/guide/participant" class="btn btn-dark">Read the Full Participant Guide</a>
+    </div>
+  </div>
+</section>
+
+<section class="section">
+  <div class="container">
+    <div class="section-eyebrow">Regions</div>
+    <h2>Find your region</h2>
+    <p class="lede">Gym League Global is rolling out region by region, Football-Australia style — starting in Sydney's North Shore.</p>
+    <div class="grid grid-2">
+      <% regions.forEach(r => { %>
+        <div class="card region-card">
+          <div>
+            <div class="rname"><%= r.name %></div>
+          </div>
+          <% if (r.status === 'active') { %>
+            <a href="/regions/<%= r.slug %>" class="badge badge-live">Live — View</a>
+          <% } else { %>
+            <span class="badge badge-soon">Coming Soon</span>
+          <% } %>
+        </div>
+      <% }) %>
+    </div>
+    <div style="text-align:center;margin-top:1.5rem;">
+      <a href="/signup/league" class="btn btn-outline" style="border-color:var(--forest);color:var(--forest);">Want to run a region? Apply here</a>
+    </div>
+  </div>
+</section>

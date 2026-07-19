@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>GLG Live — <%= fixture.team_a_name %> vs <%= fixture.team_b_name %></title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body class="cast-body">
+
+<div class="cast-wrap">
+  <div class="cast-top">
+    <div>
+      <div class="cast-gate" id="gateLabel">GATE 1 · POSTERIOR CHAIN</div>
+      <div class="cast-exname" id="exName">Ski Erg</div>
+      <div class="cast-target" id="exTarget">Benchmark: 800 m</div>
+    </div>
+    <div style="text-align:right;">
+      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:.1em;color:#8AA398;font-size:1.1vw;">WEEK <%= fixture.week %></div>
+      <div style="font-family:'Bebas Neue',sans-serif;font-size:1.8vw;color:var(--lime);"><%= fixture.team_a_name %> <span style="color:#4E655B;">vs</span> <%= fixture.team_b_name %></div>
+    </div>
+  </div>
+
+  <div class="cast-timer" id="timerDisplay">05:00</div>
+
+  <div class="cast-lineup">
+    <div class="cast-team">
+      <div class="cast-team-name"><%= fixture.team_a_name %></div>
+      <div class="cast-athletes" id="lineupA"></div>
+    </div>
+    <div class="cast-vs">VS</div>
+    <div class="cast-team">
+      <div class="cast-team-name"><%= fixture.team_b_name %></div>
+      <div class="cast-athletes" id="lineupB"></div>
+    </div>
+  </div>
+</div>
+
+<div class="cast-controls">
+  <button onclick="prevExercise()">← Prev</button>
+  <button onclick="startTimer()">Start</button>
+  <button onclick="pauseTimer()">Pause</button>
+  <button onclick="resetTimer()">Reset</button>
+  <button onclick="nextExercise()">Next →</button>
+</div>
+
+<script>
+  const gates = <%- JSON.stringify(gates) %>;
+  const exercises = <%- JSON.stringify(exercises) %>;
+  const groupedA = <%- JSON.stringify(groupedA) %>;
+  const groupedB = <%- JSON.stringify(groupedB) %>;
+  const categoryLabel = <%- JSON.stringify(categoryLabel) %>;
+  const categoryOrder = ['mens_singles','womens_singles','mens_doubles','womens_doubles','mixed_doubles'];
+
+  // build a flat running order: gate -> its exercises, in sequence
+  const runOrder = [];
+  gates.forEach(g => {
+    exercises.filter(e => e.gate_id === g.id).forEach(e => {
+      runOrder.push({ gate: g, exercise: e });
+    });
+  });
+
+  let idx = 0;
+  let seconds = 300; // default 5:00 for cardio-style; adjusted per exercise below
+  let timerInterval = null;
+  let running = false;
+
+  function defaultDuration(exercise, gate){
+    if (gate.is_sprint_finish) return 600; // 10 min all-out sprint
+    if (exercise.unit === 'm' || exercise.unit === 'cal') return 300; // cardio ~5min
+    return 90; // strength AMRAP-style
+  }
+
+  function renderLineups(){
+    const build = (grouped) => categoryOrder
+      .filter(cat => grouped[cat] && grouped[cat].length)
+      .map(cat => `<div style="margin-bottom:.6vh;"><span style="opacity:.6;">${categoryLabel[cat]}:</span> ${grouped[cat].join(' & ')}</div>`)
+      .join('');
+    document.getElementById('lineupA').innerHTML = build(groupedA);
+    document.getElementById('lineupB').innerHTML = build(groupedB);
+  }
+  renderLineups();
+
+  function render(){
+    const cur = runOrder[idx];
+    document.getElementById('gateLabel').textContent = `GATE ${cur.gate.number} · ${cur.gate.name.toUpperCase()}`;
+    document.getElementById('exName').textContent = cur.exercise.name;
+    document.getElementById('exTarget').textContent = cur.exercise.benchmark_desc
+      ? `Benchmark: ${cur.exercise.benchmark_desc}` : 'Sprint finish — first to complete wins';
+    seconds = defaultDuration(cur.exercise, cur.gate);
+    updateTimerDisplay();
+  }
+
+  function updateTimerDisplay(){
+    const m = Math.floor(Math.max(seconds,0) / 60).toString().padStart(2,'0');
+    const s = Math.floor(Math.max(seconds,0) % 60).toString().padStart(2,'0');
+    const el = document.getElementById('timerDisplay');
+    el.textContent = `${m}:${s}`;
+    el.classList.toggle('warn', seconds <= 10 && seconds > 0);
+  }
+
+  function startTimer(){
+    if (running) return;
+    running = true;
+    timerInterval = setInterval(() => {
+      if (seconds > 0) { seconds--; updateTimerDisplay(); }
+      else { clearInterval(timerInterval); running = false; }
+    }, 1000);
+  }
+  function pauseTimer(){ running = false; clearInterval(timerInterval); }
+  function resetTimer(){ pauseTimer(); render(); }
+  function nextExercise(){ pauseTimer(); idx = Math.min(idx+1, runOrder.length-1); render(); }
+  function prevExercise(){ pauseTimer(); idx = Math.max(idx-1, 0); render(); }
+
+  render();
+
+  // keyboard shortcuts for the person running the gate: space=start/pause, right/left=next/prev, r=reset
+  document.addEventListener('keydown', (e) => {
+    if (e.code === 'Space') { e.preventDefault(); running ? pauseTimer() : startTimer(); }
+    if (e.code === 'ArrowRight') nextExercise();
+    if (e.code === 'ArrowLeft') prevExercise();
+    if (e.code === 'KeyR') resetTimer();
+  });
+</script>
+
+</body>
+</html>

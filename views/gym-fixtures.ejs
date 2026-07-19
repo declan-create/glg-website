@@ -1,0 +1,32 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/gym">Dashboard</a>
+    <a href="/gym/fixtures" class="active">Fixtures</a>
+    <a href="/profile">My Account</a>
+    <a href="/guide/gym">Gym Guide</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">Season 2026</div>
+    <h2>Your Fixtures</h2>
+    <div class="table-wrap" style="margin-top:1rem;">
+      <table>
+        <tr><th>Week</th><th>Date</th><th>Fixture</th><th>Status</th><th></th></tr>
+        <% if (fixtures.length === 0) { %>
+          <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No fixtures scheduled yet.</td></tr>
+        <% } %>
+        <% fixtures.forEach(f => { %>
+          <tr>
+            <td>Week <%= f.week %></td>
+            <td><%= f.match_date %></td>
+            <td><%= f.team_a_name %> vs <%= f.team_b_name %></td>
+            <td><span class="badge <%= f.status==='complete' ? 'badge-live' : 'badge-soon' %>"><%= f.status %></span></td>
+            <td style="display:flex;gap:.6rem;">
+              <a href="/fixture/<%= f.id %>/results" class="btn btn-primary btn-sm">Enter Results</a>
+              <a href="/cast/<%= f.id %>" target="_blank" class="btn btn-outline btn-sm" style="border-color:var(--forest);color:var(--forest);">Cast Display</a>
+            </td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+  </div>
+</div>

@@ -1,0 +1,38 @@
+<section class="form-page">
+  <div class="form-card">
+    <h2>Register Your Gym</h2>
+    <p class="sub">For gyms, run clubs, or training crews. You can register multiple teams under one gym account.</p>
+    <% if (error) { %><div class="form-error"><%= error %></div><% } %>
+
+    <form method="POST" action="/signup/gym">
+      <label>Gym / Club Name</label>
+      <input type="text" name="gym_name" required placeholder="e.g. BFT Pymble">
+
+      <label>Region</label>
+      <select name="region_id" required>
+        <option value="">Select region</option>
+        <% regions.forEach(r => { %>
+          <option value="<%= r.id %>"><%= r.name %> <%= r.status !== 'active' ? '(Coming Soon)' : '' %></option>
+        <% }) %>
+      </select>
+
+      <label>Address (optional)</label>
+      <input type="text" name="address" placeholder="Suburb, NSW">
+
+      <label>Team Name(s)</label>
+      <input type="text" name="team_names" placeholder="e.g. Pymble Raptors, Pymble Ravens">
+      <p class="helptext">Separate multiple team names with commas. One gym can field as many teams as you like — you can add more anytime from your dashboard.</p>
+
+      <div class="grid grid-2" style="gap:.8rem;margin-top:.6rem;">
+        <div><label>Your First Name</label><input type="text" name="admin_first_name" required></div>
+        <div><label>Your Last Name</label><input type="text" name="admin_last_name" required></div>
+      </div>
+      <label>Email</label>
+      <input type="email" name="email" required>
+      <label>Password</label>
+      <input type="password" name="password" required minlength="6">
+
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:1.6rem;">Register My Gym</button>
+    </form>
+  </div>
+</section>

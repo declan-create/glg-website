@@ -1,0 +1,35 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin">Overview</a>
+    <a href="/profile">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">Region</div>
+    <h2><%= region.name %></h2>
+
+    <h3 style="margin-top:1.6rem;font-size:1.3rem;color:var(--forest);">Teams</h3>
+    <div class="table-wrap" style="margin-top:.6rem;">
+      <table>
+        <tr><th>Team</th><th>Gym</th></tr>
+        <% teams.forEach(t => { %><tr><td><%= t.name %></td><td><%= t.gym_name %></td></tr><% }) %>
+      </table>
+    </div>
+
+    <h3 style="margin-top:2rem;font-size:1.3rem;color:var(--forest);">Fixtures</h3>
+    <div class="table-wrap" style="margin-top:.6rem;">
+      <table>
+        <tr><th>Week</th><th>Date</th><th>Fixture</th><th>Status</th><th></th></tr>
+        <% fixtures.forEach(f => { %>
+          <tr>
+            <td>Week <%= f.week %></td><td><%= f.match_date %></td>
+            <td><%= f.team_a_name %> vs <%= f.team_b_name %></td>
+            <td><span class="badge <%= f.status==='complete' ? 'badge-live' : 'badge-soon' %>"><%= f.status %></span></td>
+            <td><a href="/fixture/<%= f.id %>/results" style="color:var(--forest);font-weight:700;font-size:.85rem;">View/Edit →</a></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+
+    <a href="/regions/<%= region.slug %>" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;">View Public Region Page →</a>
+  </div>
+</div>

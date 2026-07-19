@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title><%= title %> — Gym League Global</title>
+<link rel="stylesheet" href="/css/style.css">
+</head>
+<body>
+
+<nav class="nav">
+  <div class="nav-inner">
+    <a href="/" class="nav-brand">
+      <div class="nav-mark"><span>GL</span></div>
+      <div class="nav-brand-text">GYM LEAGUE <span class="glo">GLOBAL</span></div>
+    </a>
+    <button class="nav-menu-btn" onclick="document.getElementById('navlinks').classList.toggle('open')">☰</button>
+    <div class="nav-links" id="navlinks">
+      <a href="/regions">Find a Region</a>
+      <a href="/guide/participant">Participant Guide</a>
+      <a href="/guide/gym">Gym Guide</a>
+      <a href="/guide/league">League Guide</a>
+      <% if (currentUser) { %>
+        <a href="<%= currentUser.role==='admin' ? '/admin' : currentUser.role==='gym_admin' ? '/gym' : currentUser.role==='league_operator' ? '/league' : '/profile' %>" class="user-chip">Hi, <%= currentUser.first_name %></a>
+        <a href="/logout">Log Out</a>
+      <% } else { %>
+        <a href="/login">Log In</a>
+        <a href="/signup/athlete" class="nav-cta">Sign Up</a>
+      <% } %>
+    </div>
+  </div>
+</nav>
+
+<%- body %>
+
+<footer>
+  <div class="container">
+    <div class="foot-grid">
+      <div>
+        <h5>Gym League Global</h5>
+        <p style="color:#9CB3A9;font-size:.85rem;max-width:320px;line-height:1.6;">Gym vs gym, head to head, six weeks a season. Real scores, real standings, real community.</p>
+        <div class="foot-socials">
+          <a href="https://instagram.com/gymleagueglobal" aria-label="Instagram" target="_blank" rel="noopener">IG</a>
+          <a href="https://facebook.com/gymleagueglobal" aria-label="Facebook" target="_blank" rel="noopener">FB</a>
+          <a href="https://tiktok.com/@gymleagueglobal" aria-label="TikTok" target="_blank" rel="noopener">TT</a>
+          <a href="https://twitter.com/gymleagueglobal" aria-label="X / Twitter" target="_blank" rel="noopener">X</a>
+        </div>
+      </div>
+      <div>
+        <h5>Compete</h5>
+        <a href="/regions">Find a Region</a>
+        <a href="/signup/athlete">Athlete Sign Up</a>
+        <a href="/signup/gym">Gym Sign Up</a>
+      </div>
+      <div>
+        <h5>Guides</h5>
+        <a href="/guide/participant">Participant Guide</a>
+        <a href="/guide/gym">Gym Operator Guide</a>
+        <a href="/guide/league">League Franchise Guide</a>
+      </div>
+      <div>
+        <h5>Run a Region</h5>
+        <a href="/signup/league">Apply as League Operator</a>
+        <a href="/login">Admin / Operator Log In</a>
+      </div>
+    </div>
+    <div class="foot-bottom">© 2026 Gym League Global. Compete · Elevate · Belong.</div>
+  </div>
+</footer>
+
+</body>
+</html>

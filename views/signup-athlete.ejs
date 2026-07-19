@@ -1,0 +1,83 @@
+<section class="form-page">
+  <div class="form-card">
+    <h2>Sign Up to Compete</h2>
+    <p class="sub">Join Gym League Global as an individual athlete.</p>
+    <% if (error) { %><div class="form-error"><%= error %></div><% } %>
+
+    <form method="POST" action="/signup/athlete" id="athleteForm">
+      <div class="grid grid-2" style="gap:.8rem;">
+        <div><label>First Name</label><input type="text" name="first_name" required></div>
+        <div><label>Last Name</label><input type="text" name="last_name" required></div>
+      </div>
+      <label>Email</label>
+      <input type="email" name="email" required>
+      <label>Password</label>
+      <input type="password" name="password" required minlength="6">
+
+      <div class="grid grid-2" style="gap:.8rem;">
+        <div>
+          <label>Gender</label>
+          <select name="gender" required>
+            <option value="">Select</option>
+            <option value="M">Male</option>
+            <option value="F">Female</option>
+          </select>
+        </div>
+        <div><label>Date of Birth</label><input type="date" name="dob"></div>
+      </div>
+
+      <label>Your Region</label>
+      <select name="region_id" id="regionSelect" required>
+        <option value="">Select your region</option>
+        <% regions.forEach(r => { %>
+          <option value="<%= r.id %>"><%= r.name %></option>
+        <% }) %>
+      </select>
+
+      <label>Team</label>
+      <div class="radio-group">
+        <label class="radio-opt" id="opt-assign">
+          <input type="radio" name="team_choice" value="assign" checked onchange="toggleTeamChoice()">
+          <div class="rlabel">Assign Me</div>
+          <div class="rdesc">Put me in the pool — a gym will pick me up</div>
+        </label>
+        <label class="radio-opt" id="opt-pick">
+          <input type="radio" name="team_choice" value="pick" onchange="toggleTeamChoice()">
+          <div class="rlabel">Pick a Team</div>
+          <div class="rdesc">I already know which team I'm joining</div>
+        </label>
+      </div>
+
+      <div id="teamPickerWrap" style="display:none;">
+        <label>Select Team</label>
+        <select name="team_id" id="teamSelect">
+          <option value="">Choose a region first</option>
+        </select>
+      </div>
+
+      <button type="submit" class="btn btn-primary" style="width:100%;margin-top:1.6rem;">Create My Account</button>
+    </form>
+  </div>
+</section>
+
+<script>
+function toggleTeamChoice(){
+  const pick = document.querySelector('input[name=team_choice]:checked').value === 'pick';
+  document.getElementById('teamPickerWrap').style.display = pick ? 'block' : 'none';
+  document.getElementById('opt-assign').classList.toggle('selected', !pick);
+  document.getElementById('opt-pick').classList.toggle('selected', pick);
+}
+document.getElementById('opt-assign').classList.add('selected');
+
+document.getElementById('regionSelect').addEventListener('change', async (e) => {
+  const regionId = e.target.value;
+  const sel = document.getElementById('teamSelect');
+  sel.innerHTML = '<option>Loading...</option>';
+  if (!regionId) { sel.innerHTML = '<option value="">Choose a region first</option>'; return; }
+  const res = await fetch(`/api/regions/${regionId}/teams`);
+  const teams = await res.json();
+  sel.innerHTML = teams.length
+    ? teams.map(t => `<option value="${t.id}">${t.name}</option>`).join('')
+    : '<option value="">No teams yet in this region</option>';
+});
+</script>

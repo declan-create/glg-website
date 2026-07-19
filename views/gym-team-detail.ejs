@@ -1,0 +1,50 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/gym">Dashboard</a>
+    <a href="/gym/fixtures">Fixtures</a>
+    <a href="/profile">My Account</a>
+    <a href="/guide/gym">Gym Guide</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow"><%= gym.name %></div>
+    <h2><%= team.name %></h2>
+
+    <h3 style="margin-top:1.6rem;font-size:1.3rem;color:var(--forest);">Roster (<%= roster.length %>)</h3>
+    <p class="lede">Every athlete needs a category assigned before results can be entered for them — this is what makes sure your Men's Singles athlete is only ever compared against the opposing team's Men's Singles athlete.</p>
+    <div class="table-wrap" style="margin-top:.8rem;">
+      <table>
+        <tr><th>Name</th><th>Gender</th><th>Category</th><th></th></tr>
+        <% if (roster.length === 0) { %>
+          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem;">No athletes on this team yet — assign some from your dashboard's unassigned pool.</td></tr>
+        <% } %>
+        <% roster.forEach(r => { %>
+          <tr>
+            <td><%= r.first_name %> <%= r.last_name %></td>
+            <td><%= r.gender %></td>
+            <td>
+              <form method="POST" action="/gym/team/<%= team.id %>/set-category" style="display:flex;gap:.5rem;align-items:center;">
+                <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
+                <select name="category" onchange="this.form.submit()" style="width:auto;padding:.4rem .6rem;font-size:.8rem;">
+                  <option value="" <%= !r.category ? 'selected' : '' %>>— Unassigned —</option>
+                  <option value="mens_singles" <%= r.category==='mens_singles'?'selected':'' %>>Men's Singles</option>
+                  <option value="womens_singles" <%= r.category==='womens_singles'?'selected':'' %>>Women's Singles</option>
+                  <option value="mens_doubles" <%= r.category==='mens_doubles'?'selected':'' %>>Men's Doubles</option>
+                  <option value="womens_doubles" <%= r.category==='womens_doubles'?'selected':'' %>>Women's Doubles</option>
+                  <option value="mixed_doubles" <%= r.category==='mixed_doubles'?'selected':'' %>>Mixed Doubles</option>
+                </select>
+              </form>
+            </td>
+            <td>
+              <form method="POST" action="/gym/team/<%= team.id %>/remove-athlete" onsubmit="return confirm('Remove this athlete from the team?')">
+                <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
+                <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Remove</button>
+              </form>
+            </td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+
+    <a href="/gym" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">← Back to Dashboard</a>
+  </div>
+</div>

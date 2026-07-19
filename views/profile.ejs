@@ -1,0 +1,55 @@
+<section class="section">
+  <div class="container">
+    <% if (welcome) { %><div class="form-success" style="max-width:600px;">Welcome to Gym League Global, <%= user.first_name %>! Your account is set up.</div><% } %>
+    <% if (query.saved) { %><div class="form-success" style="max-width:600px;">Profile updated.</div><% } %>
+
+    <div class="section-eyebrow">My Profile</div>
+    <h2><%= user.first_name %> <%= user.last_name %></h2>
+
+    <div class="grid grid-2" style="margin-top:1.5rem;align-items:start;">
+      <div class="card">
+        <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);margin-bottom:1rem;">Edit Details</h4>
+        <form method="POST" action="/profile">
+          <label>First Name</label><input type="text" name="first_name" value="<%= user.first_name %>">
+          <label>Last Name</label><input type="text" name="last_name" value="<%= user.last_name %>">
+          <label>Phone</label><input type="text" name="phone" value="<%= user.phone || '' %>">
+          <label>Bio</label><textarea name="bio" rows="3"><%= user.bio || '' %></textarea>
+          <button type="submit" class="btn btn-primary" style="margin-top:1rem;">Save Changes</button>
+        </form>
+      </div>
+
+      <div class="card card-dark">
+        <h4 style="color:var(--lime);font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;margin-bottom:1rem;">Team & Region</h4>
+        <p class="muted" style="font-size:.8rem;">Region</p>
+        <p style="font-family:'Barlow Condensed',sans-serif;font-weight:700;margin-bottom:1rem;"><%= region ? region.name : '—' %></p>
+
+        <% if (team) { %>
+          <p class="muted" style="font-size:.8rem;">Team</p>
+          <p style="font-family:'Bebas Neue',sans-serif;font-size:1.6rem;color:var(--lime);"><%= team.name %></p>
+          <p class="muted" style="font-size:.82rem;"><%= team.gym_name %></p>
+        <% } else { %>
+          <p class="muted" style="font-size:.9rem;">You're in the unassigned pool — a gym in your region will pick you up soon.</p>
+        <% } %>
+      </div>
+    </div>
+
+    <h3 style="margin-top:2.5rem;font-size:1.6rem;color:var(--forest);">My Performance History</h3>
+    <p class="lede">Every result you post is recorded here — independent of match points — so you can track your own progress week to week.</p>
+    <div class="table-wrap">
+      <table>
+        <tr><th>Week</th><th>Exercise</th><th>Result</th><th>Points Earned</th></tr>
+        <% if (history.length === 0) { %>
+          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:2rem;">No results recorded yet — check back after your first match.</td></tr>
+        <% } %>
+        <% history.forEach(h => { %>
+          <tr>
+            <td>Week <%= h.week %></td>
+            <td><%= h.exercise_name %></td>
+            <td style="font-family:'Roboto Mono',monospace;"><%= h.raw_value %> <%= h.unit %></td>
+            <td><span class="pill"><%= h.points %> pts</span></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+  </div>
+</section>
