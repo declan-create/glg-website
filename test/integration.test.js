@@ -509,3 +509,87 @@ test('access control: an unrelated gym admin cannot add or edit members on anoth
   });
   assert.strictEqual(res.status, 404);
 });
+
+test('account: any logged-in user can change their own password, and the old password stops working', async () => {
+  const freshAgent = request.agent(app);
+  const loginRes = await freshAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  assert.strictEqual(loginRes.status, 302);
+
+  const changeRes = await freshAgent.post('/account/change-password').type('form').send({
+    current_password: 'GymAdmin2026!', new_password: 'BrandNewPass123', confirm_password: 'BrandNewPass123',
+  });
+  assert.strictEqual(changeRes.status, 302);
+  assert.match(changeRes.headers.location, /pwChanged=1/);
+
+  const oldPwRes = await request(app).post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  assert.match(oldPwRes.text, /Incorrect email or password/);
+
+  const newPwRes = await request(app).post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'BrandNewPass123', next: '/gym',
+  });
+  assert.strictEqual(newPwRes.status, 302);
+
+  // change it back so later tests in this file that rely on the original password still work
+  const revertAgent = request.agent(app);
+  await revertAgent.post('/login').type('form').send({ email: 'admin@bftpymble.com.au', password: 'BrandNewPass123', next: '/gym' });
+  await revertAgent.post('/account/change-password').type('form').send({
+    current_password: 'BrandNewPass123', new_password: 'GymAdmin2026!', confirm_password: 'GymAdmin2026!',
+  });
+});
+
+test('account: change-password rejects a wrong current password and a mismatched confirmation', async () => {
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const wrongCurrent = await agent.post('/account/change-password').type('form').send({
+    current_password: 'TotallyWrong', new_password: 'Whatever123', confirm_password: 'Whatever123',
+  });
+  assert.match(wrongCurrent.headers.location, /pwError=current/);
+
+  const mismatch = await agent.post('/account/change-password').type('form').send({
+    current_password: 'GymAdmin2026!', new_password: 'Whatever123', confirm_password: 'Different456',
+  });
+  assert.match(mismatch.headers.location, /pwError=mismatch/);
+});
+
+test('gym admin: can reset a team member\'s password, and the member can log in with the newly generated one', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const teamPage = await gymAgent.get('/gym/team/1');
+  const athleteIdMatch = teamPage.text.match(/name="athlete_id" value="(\d+)"/);
+  const athleteId = athleteIdMatch[1];
+
+  const resetRes = await gymAgent.post('/gym/team/1/reset-password').type('form').send({ athlete_id: athleteId });
+  assert.strictEqual(resetRes.status, 200);
+  const pwMatch = resetRes.text.match(/New password set for this member: <strong[^>]*>([^<]+)</);
+  assert.ok(pwMatch, 'Should show the newly generated password on the page');
+  const newPassword = pwMatch[1];
+
+  const memberEmail = await (async () => {
+    const emailMatch = teamPage.text.match(/value="(\d+)"[\s\S]*?name="email"[^>]*value="([^"]+)"/);
+    return emailMatch ? emailMatch[2] : null;
+  })();
+  assert.ok(memberEmail, 'Should find the member email on the team page');
+
+  const memberLoginRes = await request(app).post('/login').type('form').send({
+    email: memberEmail, password: newPassword, next: '/profile',
+  });
+  assert.strictEqual(memberLoginRes.status, 302, `Member should be able to log in with the newly reset password (tried email=${memberEmail})`);
+});
+
+test('access control: an unrelated gym admin cannot reset another gym\'s member password', async () => {
+  const outsiderAgent = request.agent(app);
+  await outsiderAgent.post('/signup/gym').type('form').send({
+    gym_name: 'Reset Outsider Test 2', admin_first_name: 'Out', admin_last_name: 'Sider',
+    email: 'resetoutsidertest2@example.com', password: 'TestPass123', region_id: 3,
+  });
+  const res = await outsiderAgent.post('/gym/team/1/reset-password').type('form').send({ athlete_id: 1 });
+  assert.strictEqual(res.status, 404);
+});

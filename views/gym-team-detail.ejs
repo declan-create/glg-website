@@ -2,7 +2,7 @@
   <div class="dash-side">
     <a href="/gym">Dashboard</a>
     <a href="/gym/fixtures">Fixtures</a>
-    <a href="/profile">My Account</a>
+    <a href="/account">My Account</a>
     <a href="/guide/gym">Gym Guide</a>
   </div>
   <div class="dash-main">
@@ -16,6 +16,12 @@
     <% if (query.error === 'name') { %><div class="form-error">Please enter a valid first name.</div><% } %>
     <% if (query.error === 'gender') { %><div class="form-error">Please select a gender.</div><% } %>
     <% if (query.error === 'category') { %><div class="form-error">Please select a valid category.</div><% } %>
+    <% if (newPassword) { %>
+      <div class="form-success">
+        New password set for this member: <strong style="font-family:'Roboto Mono',monospace;font-size:1rem;"><%= newPassword %></strong>
+        — pass this along to them directly (there's no automatic email yet). They should change it themselves once logged in, from their own account page.
+      </div>
+    <% } %>
 
     <h3 style="margin-top:1.6rem;font-size:1.3rem;color:var(--forest);">Roster (<%= roster.length %>)</h3>
     <p class="lede">Most athletes will sign up themselves and you'll pick them up from the unassigned pool on your dashboard — but you can also add or edit a member directly here (handy before everyone's signed up, or to fix a typo). Every member needs a category assigned before results can be entered for them.</p>
@@ -62,10 +68,16 @@
             <button type="submit" class="btn btn-primary btn-sm">Save</button>
           </div>
         </form>
-        <form method="POST" action="/gym/team/<%= team.id %>/remove-athlete" onsubmit="return confirm('Remove this member from the team?')" style="margin-top:.6rem;">
-          <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
-          <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Remove from Team</button>
-        </form>
+        <div style="display:flex;gap:.6rem;margin-top:.6rem;">
+          <form method="POST" action="/gym/team/<%= team.id %>/remove-athlete" onsubmit="return confirm('Remove this member from the team?')">
+            <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
+            <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Remove from Team</button>
+          </form>
+          <form method="POST" action="/gym/team/<%= team.id %>/reset-password" onsubmit="return confirm('Reset this member\'s password? Their old password will stop working.')">
+            <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
+            <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--forest);color:var(--forest);">Reset Password</button>
+          </form>
+        </div>
       </div>
     <% }) %>
 

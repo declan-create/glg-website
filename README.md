@@ -178,9 +178,13 @@ Ski Erg, benchmark 800m individual / 1600m doubles:
 ### ⚠️ Known gaps — not yet built, not hidden
 - **Payments** — not needed until Sept/Oct per your instruction. Data model is ready to wire
   up when it's time.
-- **Password reset / email verification** — no SMTP configured in this environment, so this
-  wasn't built rather than half-built. Needs an email service (e.g. Postmark, SES) wired in
-  before this matters for real users.
+- **Automatic email (sign-up confirmation, forgotten-password links)** — no SMTP configured
+  in this environment, so this wasn't built rather than half-built. **This no longer blocks
+  password management, though:** anyone can change their own password from their account page
+  (no email needed, since they're already logged in), and a gym admin can reset a member's
+  password directly and see the new one on screen to relay to them. What's still missing is
+  automatic delivery (a welcome email, a "forgot password" link sent without a human in the
+  loop) — needs an email service (e.g. Postmark, SES) wired in for that specifically.
 - **CSRF tokens** — not yet implemented. Lower priority than the fixes above for a controlled
   Friday trial with known accounts, but should be added before this is open to the public.
 - **Multiple divisions by fitness level/age group** — the `division` field exists on `teams`

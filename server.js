@@ -315,6 +315,37 @@ app.post('/profile', requireLogin, (req, res) => {
   res.redirect('/profile?saved=1');
 });
 
+// ============ ACCOUNT (change password — available to every role) ============
+// Athletes get a richer page at /profile already; everyone else lands here.
+// This closes the "no password reset" gap without needing email infrastructure:
+// anyone logged in can change their own password directly, and (see the gym
+// team routes) a gym admin can reset a member's password on their behalf.
+app.get('/account', requireLogin, (req, res) => {
+  if (req.session.user.role === 'athlete') return res.redirect('/profile');
+  const user = db.prepare("SELECT * FROM users WHERE id=?").get(req.session.user.id);
+  res.render('account', { title: 'My Account', user, query: req.query });
+});
+
+app.post('/account/change-password', requireLogin, (req, res) => {
+  const { current_password, new_password, confirm_password } = req.body;
+  const user = db.prepare("SELECT * FROM users WHERE id=?").get(req.session.user.id);
+  const backTo = req.session.user.role === 'athlete' ? '/profile' : '/account';
+
+  if (!bcrypt.compareSync(current_password || '', user.password_hash)) {
+    return res.redirect(backTo + '?pwError=current');
+  }
+  if (!isValidPassword(new_password)) {
+    return res.redirect(backTo + '?pwError=length');
+  }
+  if (new_password !== confirm_password) {
+    return res.redirect(backTo + '?pwError=mismatch');
+  }
+
+  const hash = bcrypt.hashSync(new_password, 10);
+  db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hash, user.id);
+  res.redirect(backTo + '?pwChanged=1');
+});
+
 // ============ GYM ADMIN DASHBOARD ============
 
 app.get('/gym', requireLogin, requireRole('gym_admin'), (req, res) => {
@@ -363,7 +394,7 @@ app.get('/gym/team/:id', requireLogin, requireRole('gym_admin'), (req, res) => {
   const roster = db.prepare(`
     SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, a.category
     FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=?`).all(team.id);
-  res.render('gym-team-detail', { title: team.name, team, roster, gym });
+  res.render('gym-team-detail', { title: team.name, team, roster, gym, resetPasswordFor: null, newPassword: null });
 });
 
 app.post('/gym/team/:id/remove-athlete', requireLogin, requireRole('gym_admin'), (req, res) => {
@@ -445,6 +476,39 @@ app.post('/gym/team/:id/add-member', requireLogin, requireRole('gym_admin'), (re
     .run(uid, team.region_id, team.id, category || null);
 
   res.redirect('/gym/team/' + req.params.id + '?added=1');
+});
+
+// Gym admin resets a member's password (e.g. they've forgotten it and there's
+// no email/reset-link infrastructure to send one automatically). The new
+// password is shown directly on the page so the gym admin can pass it along.
+function generateTempPassword() {
+  const words = ['River', 'Storm', 'Falcon', 'Ridge', 'Ember', 'Cedar', 'Harbor', 'Comet', 'Granite', 'Willow'];
+  const word = words[Math.floor(Math.random() * words.length)];
+  const digits = Math.floor(1000 + Math.random() * 9000);
+  return `${word}${digits}!`;
+}
+
+app.post('/gym/team/:id/reset-password', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
+  if (!team) return res.status(404).render('error', { title: 'Not Found', message: 'Team not found.' });
+
+  const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND team_id=?").get(req.body.athlete_id, team.id);
+  if (!athlete) return res.redirect('/gym/team/' + req.params.id);
+
+  const newPassword = generateTempPassword();
+  const hash = bcrypt.hashSync(newPassword, 10);
+  db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hash, athlete.user_id);
+
+  // Re-render directly (not a redirect) so the new password can be shown once,
+  // in the response — never put a raw password in a URL/query string.
+  const roster = db.prepare(`
+    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, a.category
+    FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=?`).all(team.id);
+  res.render('gym-team-detail', {
+    title: team.name, team, roster, gym,
+    resetPasswordFor: athlete.id, newPassword,
+  });
 });
 
 // ---- Fixtures & results entry (gym admin can enter results for their own team's fixtures) ----

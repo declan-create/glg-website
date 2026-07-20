@@ -33,6 +33,23 @@
       </div>
     </div>
 
+    <div class="card" style="max-width:500px;margin-top:1.5rem;">
+      <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);margin-bottom:1rem;">Change Password</h4>
+      <% if (query.pwChanged) { %><div class="form-success">Password updated.</div><% } %>
+      <% if (query.pwError === 'current') { %><div class="form-error">Your current password was incorrect.</div><% } %>
+      <% if (query.pwError === 'length') { %><div class="form-error">New password must be at least 6 characters.</div><% } %>
+      <% if (query.pwError === 'mismatch') { %><div class="form-error">New password and confirmation don't match.</div><% } %>
+      <form method="POST" action="/account/change-password">
+        <label style="margin-top:0;">Current Password</label>
+        <input type="password" name="current_password" required>
+        <label>New Password</label>
+        <input type="password" name="new_password" required minlength="6">
+        <label>Confirm New Password</label>
+        <input type="password" name="confirm_password" required minlength="6">
+        <button type="submit" class="btn btn-primary" style="margin-top:1rem;">Update Password</button>
+      </form>
+    </div>
+
     <h3 style="margin-top:2.5rem;font-size:1.6rem;color:var(--forest);">My Performance History</h3>
     <p class="lede">Every result you post is recorded here — independent of match points — so you can track your own progress week to week.</p>
     <div class="table-wrap">
