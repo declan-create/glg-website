@@ -55,10 +55,17 @@ the real HTTP routes — signup flows, role-based access control, and the full s
 | judge1@gymleagueglobal.com.au | Judge2026! |
 | judge2@gymleagueglobal.com.au | Judge2026! |
 
-**Sample athletes:** each team (Gadigal, Wangal) is seeded with a full 8-athlete roster
-covering all 5 categories (1 Men's Singles, 1 Women's Singles, 2 Men's Doubles, 2 Women's
-Doubles, 1 Mixed Doubles pair). All use password `Athlete2026!` — e.g.
-`jack.nguyen1@example.com`. Full list in `db.js`.
+**Sample roster:** each team (Gadigal, Wangal) is seeded with a full 8-slot roster covering
+all 5 categories (1 Men's Singles, 1 Women's Singles, 2 Men's Doubles, 2 Women's Doubles,
+1 Mixed Doubles pair) — every slot is a **"TBA" placeholder**, not a fabricated name, since
+real athletes haven't signed up yet. All use password `Athlete2026!` — e.g. `tba1@example.com`.
+Full list in `db.js`.
+
+**Gym admins can now manage members directly**, not just via self-signup: on a team's page,
+every member's name/email/gender/category is editable in place, and there's an "Add a New
+Member" form for anyone who hasn't signed up themselves — they log in with the email you
+enter and the default password `GLGWelcome2026!` (worth telling them directly, since there's
+no automatic email sent yet — see the known gaps below).
 
 ---
 

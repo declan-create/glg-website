@@ -22,7 +22,7 @@
   .gate-tab.active{background:var(--lime);color:var(--forest);border-color:var(--lime);}
 
   .clock-row{text-align:center;margin:2rem 0 1.5rem;}
-  .master-clock{font-family:'Roboto Mono',monospace;font-weight:700;font-size:5rem;letter-spacing:.02em;}
+  .master-clock{font-family:'Roboto Mono',monospace;font-weight:700;font-size:clamp(2.2rem, 9vw, 5rem);letter-spacing:.02em;}
   .master-clock.finished{color:var(--lime);}
   .clock-label{font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:.14em;color:#8AA398;font-size:.85rem;text-align:center;margin-bottom:.3rem;}
 
@@ -105,7 +105,15 @@
   let serverElapsed = 0, serverRunning = false, lastPollTime = Date.now();
   let liveScores = {};
 
-  function fmt(sec){ sec=Math.max(0,Math.floor(sec)); return String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0'); }
+  function fmt(sec, showMs){
+    sec = Math.max(0, sec);
+    const whole = Math.floor(sec);
+    const m = String(Math.floor(whole/60)).padStart(2,'0');
+    const s = String(whole%60).padStart(2,'0');
+    if (!showMs) return m+':'+s;
+    const ms = String(Math.floor((sec - whole) * 1000)).padStart(3,'0');
+    return m+':'+s+'.'+ms;
+  }
 
   async function pollClock(){
     try {
@@ -130,7 +138,7 @@
     const masterSeconds = currentDisplaySeconds();
 
     const clockEl = document.getElementById('masterClock');
-    clockEl.textContent = fmt(masterSeconds);
+    clockEl.textContent = fmt(masterSeconds, true);
     clockEl.classList.toggle('finished', masterSeconds >= TOTAL_DURATION);
 
     document.getElementById('catGrid').innerHTML = categoryOrder.map((cat, i) => {
@@ -149,7 +157,7 @@
         for (let s=0;s<STAGES.length;s++){ if (elapsed<cum+STAGES[s].seconds){stageIdx=s;break;} cum+=STAGES[s].seconds; }
         stageLabel = `Stage ${stageIdx+1} of ${STAGES.length}`;
         stageName = STAGES[stageIdx].name;
-        remaining = fmt(STAGES[stageIdx].seconds - (elapsed-cum));
+        remaining = fmt(STAGES[stageIdx].seconds - (elapsed-cum), true);
       }
 
       return `<div class="cat-row ${rowClass}">
@@ -181,7 +189,7 @@
   }
 
   Promise.all([pollClock(), pollScores()]).then(renderBoard);
-  setInterval(renderBoard, 200);
+  setInterval(renderBoard, 33);
   setInterval(pollClock, 1000);
   setInterval(() => pollScores().then(renderBoard), 3000);
 </script>

@@ -234,27 +234,26 @@ function seed() {
     ["mixed_doubles", "M"], ["mixed_doubles", "F"],
   ];
 
-  // Name pools sized generously so this keeps working even if more teams are added later
-  const malePool = ["Jack","Liam","Noah","Ethan","Lucas","Mason","Ryan","Oliver","Henry","James","Leo","Sam","Tom","Ben","Max","Cody"];
-  const femalePool = ["Emma","Olivia","Ava","Mia","Chloe","Zoe","Grace","Sophie","Isla","Ruby","Ella","Amy","Lucy","Kate","Nina","Jade"];
-  const surnamePool = ["Nguyen","Wilson","Chen","Baker","Singh","Thompson","Kelly","Roberts","Ahmed","Ferguson","Davies","Campbell","Reid","Walsh","Turner","Hughes"];
-
-  let mIdx = 0, fIdx = 0, surIdx = 0;
+  // Real athletes haven't signed up yet — every seeded roster slot is a "TBA"
+  // placeholder (not a fabricated name) so gyms can assign categories now and
+  // swap in real people as they sign up, without anything looking like a real
+  // participant before the link has even gone out.
+  let tbaCounter = 0;
   for (const teamId of teamIds) {
     for (const [category, gender] of categoryTemplate) {
-      const fn = gender === 'M' ? malePool[mIdx++] : femalePool[fIdx++];
-      const ln = surnamePool[surIdx++ % surnamePool.length];
-      const email = `${fn.toLowerCase()}.${ln.toLowerCase()}${surIdx}@example.com`;
-      const uid = insUser.run(email, hash("Athlete2026!"), "athlete", fn, ln).lastInsertRowid;
+      tbaCounter++;
+      const email = `tba${tbaCounter}@example.com`;
+      const uid = insUser.run(email, hash("Athlete2026!"), "athlete", "TBA", "").lastInsertRowid;
       db.prepare("UPDATE users SET gender=? WHERE id=?").run(gender, uid);
       insAthlete.run(uid, northShore, teamId, 0, category);
     }
   }
 
-  // 2 unassigned athletes wanting a team (no category yet — assigned once picked up)
-  for (const [fn,ln,gender] of [["Finn","Foster","M"],["Sienna","Mitchell","F"]]) {
-    const email = `${fn.toLowerCase()}.${ln.toLowerCase()}@example.com`;
-    const uid = insUser.run(email, hash("Athlete2026!"), "athlete", fn, ln).lastInsertRowid;
+  // 2 unassigned "TBA" slots in the pool (no category yet — assigned once a real athlete is picked up)
+  for (const gender of ["M", "F"]) {
+    tbaCounter++;
+    const email = `tba${tbaCounter}@example.com`;
+    const uid = insUser.run(email, hash("Athlete2026!"), "athlete", "TBA", "").lastInsertRowid;
     db.prepare("UPDATE users SET gender=? WHERE id=?").run(gender, uid);
     insAthlete.run(uid, northShore, null, 1, null);
   }

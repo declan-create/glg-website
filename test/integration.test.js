@@ -402,3 +402,110 @@ test('region page: shows Cast Display link only to the gym admin who can manage 
   const outsiderRes = await outsiderAgent.get('/regions/north-shore');
   assert.doesNotMatch(outsiderRes.text, /Cast Display/, 'An unrelated gym admin should not see Cast Display');
 });
+
+test('cast display: master clock shows millisecond precision and advances smoothly', async (t) => {
+  let chromiumPath;
+  try {
+    chromiumPath = require('child_process').execSync(
+      'find /opt/pw-browsers -type f -name "headless_shell" -o -type f -name "chrome" 2>/dev/null | head -1',
+      { encoding: 'utf8' }
+    ).trim();
+  } catch { chromiumPath = ''; }
+  if (!chromiumPath) { t.skip('No system Chromium found'); return; }
+
+  const { chromium } = require('playwright-core');
+  const browser = await chromium.launch({ executablePath: chromiumPath });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto('http://localhost:' + PORT_UNDER_TEST + '/login');
+    await page.fill('input[name=email]', 'admin@bftpymble.com.au');
+    await page.fill('input[name=password]', 'GymAdmin2026!');
+    await page.click('button[type=submit]');
+    await page.goto('http://localhost:' + PORT_UNDER_TEST + '/cast/1');
+    await page.click("button:has-text('Start')");
+    await page.waitForTimeout(150);
+    const reading1 = await page.locator('#masterClock').innerText();
+    await page.waitForTimeout(150);
+    const reading2 = await page.locator('#masterClock').innerText();
+
+    assert.match(reading1, /^\d{2}:\d{2}\.\d{3}$/, `Expected MM:SS.mmm format, got "${reading1}"`);
+    assert.match(reading2, /^\d{2}:\d{2}\.\d{3}$/, `Expected MM:SS.mmm format, got "${reading2}"`);
+    assert.notStrictEqual(reading1, reading2, 'Clock should have visibly advanced between the two readings');
+  } finally {
+    await browser.close();
+  }
+});
+
+test('seed data: all athletes are TBA placeholders, not fabricated names', async () => {
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const res = await agent.get('/gym/team/1');
+  assert.match(res.text, /TBA/);
+  assert.doesNotMatch(res.text, /Jack Nguyen|Emma Wilson|Lucas Ahmed/, 'No fabricated names should remain in the seed data');
+});
+
+test('gym admin: can add a new member directly, and that member can log in with the default password', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const addRes = await gymAgent.post('/gym/team/1/add-member').type('form').send({
+    first_name: 'New', last_name: 'Member', email: 'newmembertest@example.com', gender: 'F', category: 'womens_singles',
+  });
+  assert.strictEqual(addRes.status, 302);
+
+  const newMemberAgent = request.agent(app);
+  const loginRes = await newMemberAgent.post('/login').type('form').send({
+    email: 'newmembertest@example.com', password: 'GLGWelcome2026!', next: '/profile',
+  });
+  assert.strictEqual(loginRes.status, 302);
+  const profileRes = await newMemberAgent.get('/profile');
+  assert.match(profileRes.text, /New Member/);
+});
+
+test('gym admin: can edit an existing member\'s details', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const teamPage = await gymAgent.get('/gym/team/1');
+  const athleteIdMatch = teamPage.text.match(/name="athlete_id" value="(\d+)"/);
+  assert.ok(athleteIdMatch, 'Should find at least one athlete_id on the team page');
+  const athleteId = athleteIdMatch[1];
+
+  const updateRes = await gymAgent.post('/gym/team/1/update-member').type('form').send({
+    athlete_id: athleteId, first_name: 'Edited', last_name: 'Person',
+    email: 'edited.person@example.com', gender: 'M', category: 'mens_singles',
+  });
+  assert.strictEqual(updateRes.status, 302);
+
+  const afterRes = await gymAgent.get('/gym/team/1');
+  assert.match(afterRes.text, /Edited/);
+});
+
+test('gym admin: adding a member with an email already in use is rejected', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const res = await gymAgent.post('/gym/team/1/add-member').type('form').send({
+    first_name: 'Dup', last_name: 'Test', email: 'admin@bftpymble.com.au', gender: 'M', category: '',
+  });
+  assert.strictEqual(res.status, 302);
+  assert.match(res.headers.location, /error=emailtaken/);
+});
+
+test('access control: an unrelated gym admin cannot add or edit members on another gym\'s team', async () => {
+  const outsiderAgent = request.agent(app);
+  await outsiderAgent.post('/signup/gym').type('form').send({
+    gym_name: 'Member Outsider Test', admin_first_name: 'Out', admin_last_name: 'Sider',
+    email: 'memberoutsidertest@example.com', password: 'TestPass123', region_id: 3,
+  });
+  const res = await outsiderAgent.post('/gym/team/1/add-member').type('form').send({
+    first_name: 'Hacker', last_name: 'Test', email: 'hackertest@example.com', gender: 'M', category: '',
+  });
+  assert.strictEqual(res.status, 404);
+});

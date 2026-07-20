@@ -44,6 +44,7 @@ const authLimiter = rateLimit({
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 function isValidEmail(email) { return typeof email === 'string' && email.length <= 254 && EMAIL_RE.test(email.trim()); }
 function isReasonableLength(str, max = 200) { return typeof str === 'string' && str.trim().length > 0 && str.trim().length <= max; }
+function isOptionalReasonableLength(str, max = 200) { return typeof str === 'string' && str.trim().length <= max; } // allows empty (e.g. single-name people)
 function isValidPassword(pw) { return typeof pw === 'string' && pw.length >= 6 && pw.length <= 200; }
 
 app.set('view engine', 'ejs');
@@ -374,19 +375,76 @@ app.post('/gym/team/:id/remove-athlete', requireLogin, requireRole('gym_admin'),
   res.redirect('/gym/team/' + req.params.id);
 });
 
-app.post('/gym/team/:id/set-category', requireLogin, requireRole('gym_admin'), (req, res) => {
+app.post('/gym/team/:id/update-member', requireLogin, requireRole('gym_admin'), (req, res) => {
   const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
   const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
-  const { athlete_id, category } = req.body;
+  if (!team) return res.status(404).render('error', { title: 'Not Found', message: 'Team not found.' });
+
+  const { athlete_id, first_name, last_name, email, gender, category } = req.body;
   const validCategories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles', ''];
-  if (team && validCategories.includes(category)) {
-    // verify the athlete belongs to this team
-    const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND team_id=?").get(athlete_id, team.id);
-    if (athlete) {
-      db.prepare("UPDATE athletes SET category=? WHERE id=?").run(category || null, athlete_id);
-    }
+  const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND team_id=?").get(athlete_id, team.id);
+  if (!athlete) return res.redirect('/gym/team/' + req.params.id + '?error=notfound');
+
+  if (!isReasonableLength(first_name, 80) || !isOptionalReasonableLength(last_name, 80)) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=name');
   }
-  res.redirect('/gym/team/' + req.params.id);
+  if (!isValidEmail(email)) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=email');
+  }
+  const existingEmail = db.prepare("SELECT id FROM users WHERE email=? AND id!=(SELECT user_id FROM athletes WHERE id=?)").get(email.trim().toLowerCase(), athlete_id);
+  if (existingEmail) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=emailtaken');
+  }
+  if (gender !== 'M' && gender !== 'F') {
+    return res.redirect('/gym/team/' + req.params.id + '?error=gender');
+  }
+  if (!validCategories.includes(category)) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=category');
+  }
+
+  db.prepare("UPDATE users SET first_name=?, last_name=?, email=?, gender=? WHERE id=?")
+    .run(first_name.trim(), last_name.trim(), email.trim().toLowerCase(), gender, athlete.user_id);
+  db.prepare("UPDATE athletes SET category=? WHERE id=?").run(category || null, athlete_id);
+
+  res.redirect('/gym/team/' + req.params.id + '?saved=1');
+});
+
+// Gym admin directly creates a new member on their team — for people who
+// haven't signed up themselves yet. A default password is set; the gym
+// should let the athlete know it so they can log in (no email/reset
+// infrastructure is wired up yet — see README).
+app.post('/gym/team/:id/add-member', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
+  if (!team) return res.status(404).render('error', { title: 'Not Found', message: 'Team not found.' });
+
+  const { first_name, last_name, email, gender, category } = req.body;
+  const validCategories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles', ''];
+
+  if (!isReasonableLength(first_name, 80) || !isOptionalReasonableLength(last_name, 80)) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=name');
+  }
+  if (!isValidEmail(email)) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=email');
+  }
+  if (db.prepare("SELECT id FROM users WHERE email=?").get(email.trim().toLowerCase())) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=emailtaken');
+  }
+  if (gender !== 'M' && gender !== 'F') {
+    return res.redirect('/gym/team/' + req.params.id + '?error=gender');
+  }
+  if (!validCategories.includes(category)) {
+    return res.redirect('/gym/team/' + req.params.id + '?error=category');
+  }
+
+  const DEFAULT_PASSWORD = 'GLGWelcome2026!';
+  const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
+  const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,gender) VALUES (?,?,?,?,?,?)")
+    .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender).lastInsertRowid;
+  db.prepare("INSERT INTO athletes (user_id, region_id, team_id, wants_team, category) VALUES (?,?,?,0,?)")
+    .run(uid, team.region_id, team.id, category || null);
+
+  res.redirect('/gym/team/' + req.params.id + '?added=1');
 });
 
 // ---- Fixtures & results entry (gym admin can enter results for their own team's fixtures) ----
