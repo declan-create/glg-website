@@ -163,3 +163,38 @@ test('cast display: an unrelated gym admin is blocked', async () => {
   const res = await agent.get('/cast/1');
   assert.strictEqual(res.status, 403);
 });
+
+test('cast display: client-side JS actually runs without error and renders all 5 category rows', async () => {
+  // This is the test that would have caught the "fixture is not defined" bug —
+  // checking the HTML response alone isn't enough, since a broken <script> tag
+  // still returns 200 with valid markup. This actually executes the page's JS
+  // in a real DOM (jsdom) the same way a browser would.
+  const { JSDOM } = require('jsdom');
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const res = await agent.get('/cast/1');
+  assert.strictEqual(res.status, 200);
+
+  const dom = new JSDOM(res.text, { runScripts: 'dangerously', url: 'http://localhost/cast/1' });
+  let jsError = null;
+  dom.window.onerror = (msg) => { jsError = msg; };
+
+  await new Promise(r => setTimeout(r, 300));
+  assert.strictEqual(jsError, null, `Cast display threw a JS error on load: ${jsError}`);
+
+  const grid = dom.window.document.getElementById('catGrid');
+  const rowCount = (grid.innerHTML.match(/cat-row/g) || []).length;
+  assert.strictEqual(rowCount, 5, 'Expected all 5 categories to render on load');
+
+  // Simulate an actual Start button click and confirm the clock advances
+  const startBtn = [...dom.window.document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Start');
+  assert.ok(startBtn, 'Start button should exist');
+  startBtn.click();
+  await new Promise(r => setTimeout(r, 2200));
+  const clockText = dom.window.document.getElementById('masterClock').textContent;
+  assert.notStrictEqual(clockText, '00:00', 'Clock should have advanced after clicking Start');
+
+  dom.window.close();
+});
