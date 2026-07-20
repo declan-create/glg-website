@@ -4,43 +4,81 @@
 <meta charset="UTF-8">
 <title>GLG Live — <%= fixture.team_a_name %> vs <%= fixture.team_b_name %></title>
 <link rel="stylesheet" href="/css/style.css">
+<style>
+  .board-body{background:var(--forest);color:var(--white);margin:0;min-height:100vh;font-family:'DM Sans',sans-serif;}
+  .board-wrap{max-width:1500px;margin:0 auto;padding:2vh 2vw 4vh;}
+  .board-top{display:flex;justify-content:space-between;align-items:flex-start;flex-wrap:wrap;gap:1rem;}
+  .board-fixture{font-family:'Bebas Neue',sans-serif;font-size:2.4rem;color:var(--lime);line-height:1;}
+  .board-sub{font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:.1em;color:#8AA398;font-size:.9rem;margin-top:.3rem;}
+
+  .gate-tabs{display:flex;gap:.6rem;margin-top:1.2rem;flex-wrap:wrap;}
+  .gate-tab{background:rgba(241,245,249,.08);border:1px solid rgba(241,245,249,.15);color:var(--white);
+    font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:.06em;font-size:.85rem;
+    padding:.6rem 1.2rem;border-radius:8px;cursor:pointer;text-transform:uppercase;}
+  .gate-tab.active{background:var(--lime);color:var(--forest);border-color:var(--lime);}
+
+  .clock-row{display:flex;align-items:center;justify-content:center;gap:2rem;margin:2rem 0 1.5rem;}
+  .master-clock{font-family:'Roboto Mono',monospace;font-weight:700;font-size:5rem;letter-spacing:.02em;}
+  .master-clock.finished{color:var(--lime);}
+  .clock-label{font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:.14em;color:#8AA398;font-size:.85rem;text-align:center;margin-bottom:.3rem;}
+  .clock-controls{display:flex;gap:.6rem;}
+  .clock-controls button{background:rgba(241,245,249,.1);color:var(--white);border:1px solid rgba(241,245,249,.2);
+    padding:.7rem 1.4rem;border-radius:8px;font-family:'Barlow Condensed',sans-serif;font-weight:700;
+    font-size:.9rem;cursor:pointer;letter-spacing:.05em;text-transform:uppercase;}
+  .clock-controls button:hover{background:var(--lime);color:var(--forest);border-color:var(--lime);}
+  .clock-controls button.danger:hover{background:#DC2626;color:#fff;border-color:#DC2626;}
+
+  .cat-grid{display:grid;grid-template-columns:1fr;gap:.7rem;margin-top:1rem;}
+  .cat-row{display:grid;grid-template-columns:1.3fr 1.6fr 1.6fr 1fr;gap:1rem;align-items:center;
+    background:rgba(241,245,249,.05);border:1px solid rgba(241,245,249,.1);border-radius:10px;padding:1rem 1.4rem;}
+  .cat-row.is-live{border-color:var(--lime);background:rgba(163,230,53,.08);}
+  .cat-row.is-done{opacity:.45;}
+  .cat-name{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;color:var(--lime);}
+  .cat-athletes{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:.85rem;line-height:1.5;}
+  .cat-athletes .side{display:block;}
+  .cat-athletes .team-tag{color:#8AA398;font-weight:700;margin-right:.4rem;}
+  .cat-stage{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;}
+  .cat-stage .stagelabel{display:block;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.65rem;letter-spacing:.12em;color:#8AA398;text-transform:uppercase;margin-bottom:.15rem;}
+  .cat-remaining{font-family:'Roboto Mono',monospace;font-weight:700;font-size:1.6rem;text-align:right;}
+
+  .legend{display:flex;gap:1.5rem;justify-content:center;margin-top:1.5rem;font-size:.78rem;color:#8AA398;font-family:'Barlow Condensed',sans-serif;font-weight:600;letter-spacing:.04em;}
+  .legend span::before{content:"● ";}
+  .legend .l-live::before{color:var(--lime);}
+  .legend .l-wait::before{color:#8AA398;}
+  .legend .l-done::before{color:#4E655B;}
+</style>
 </head>
-<body class="cast-body">
+<body class="board-body">
 
-<div class="cast-wrap">
-  <div class="cast-top">
+<div class="board-wrap">
+  <div class="board-top">
     <div>
-      <div class="cast-gate" id="gateLabel">GATE 1 · POSTERIOR CHAIN</div>
-      <div class="cast-exname" id="exName">Ski Erg</div>
-      <div class="cast-target" id="exTarget">Benchmark: 800 m</div>
-    </div>
-    <div style="text-align:right;">
-      <div style="font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:.1em;color:#8AA398;font-size:1.1vw;">WEEK <%= fixture.week %></div>
-      <div style="font-family:'Bebas Neue',sans-serif;font-size:1.8vw;color:var(--lime);"><%= fixture.team_a_name %> <span style="color:#4E655B;">vs</span> <%= fixture.team_b_name %></div>
+      <div class="board-fixture"><%= fixture.team_a_name %> <span style="color:#4E655B;">vs</span> <%= fixture.team_b_name %></div>
+      <div class="board-sub">WEEK <%= fixture.week %> · LIVE MATCH BOARD</div>
     </div>
   </div>
 
-  <div class="cast-timer" id="timerDisplay">05:00</div>
+  <div class="gate-tabs" id="gateTabs"></div>
 
-  <div class="cast-lineup">
-    <div class="cast-team">
-      <div class="cast-team-name"><%= fixture.team_a_name %></div>
-      <div class="cast-athletes" id="lineupA"></div>
+  <div class="clock-row">
+    <div>
+      <div class="clock-label" id="modeLabel">GATES 1–3 · COMBINED</div>
+      <div class="master-clock" id="masterClock">00:00</div>
     </div>
-    <div class="cast-vs">VS</div>
-    <div class="cast-team">
-      <div class="cast-team-name"><%= fixture.team_b_name %></div>
-      <div class="cast-athletes" id="lineupB"></div>
+    <div class="clock-controls">
+      <button onclick="startClock()">Start</button>
+      <button onclick="pauseClock()">Pause</button>
+      <button class="danger" onclick="resetClock()">Reset</button>
     </div>
   </div>
-</div>
 
-<div class="cast-controls">
-  <button onclick="prevExercise()">← Prev</button>
-  <button onclick="startTimer()">Start</button>
-  <button onclick="pauseTimer()">Pause</button>
-  <button onclick="resetTimer()">Reset</button>
-  <button onclick="nextExercise()">Next →</button>
+  <div class="cat-grid" id="catGrid"></div>
+
+  <div class="legend">
+    <span class="l-live">Currently competing</span>
+    <span class="l-wait">Not started yet</span>
+    <span class="l-done">Finished</span>
+  </div>
 </div>
 
 <script>
@@ -49,76 +87,118 @@
   const groupedA = <%- JSON.stringify(groupedA) %>;
   const groupedB = <%- JSON.stringify(groupedB) %>;
   const categoryLabel = <%- JSON.stringify(categoryLabel) %>;
+
   const categoryOrder = ['mens_singles','womens_singles','mens_doubles','womens_doubles','mixed_doubles'];
+  const OFFSET_SEC = 5 * 60;
+  const STAGE_SEC = 5 * 60;
 
-  // build a flat running order: gate -> its exercises, in sequence
-  const runOrder = [];
-  gates.forEach(g => {
-    exercises.filter(e => e.gate_id === g.id).forEach(e => {
-      runOrder.push({ gate: g, exercise: e });
-    });
-  });
+  const gates123 = gates.filter(g => !g.is_sprint_finish).sort((a,b) => a.number - b.number);
+  const combinedExercises = gates123.flatMap(g =>
+    exercises.filter(e => e.gate_id === g.id).map(e => ({ ...e, gateNumber: g.number, gateName: g.name }))
+  );
 
-  let idx = 0;
-  let seconds = 300; // default 5:00 for cardio-style; adjusted per exercise below
-  let timerInterval = null;
+  const gate4 = gates.find(g => g.is_sprint_finish);
+  const gate4Exercises = gate4 ? exercises.filter(e => e.gate_id === gate4.id) : [];
+
+  // Both modes run entirely automatically off one shared clock — nothing manual per category.
+  const MODES = [
+    {
+      key: 'combined',
+      label: 'Gates 1–3 — Combined',
+      stages: combinedExercises.map(e => ({ name: `Gate ${e.gateNumber}: ${e.name}`, seconds: STAGE_SEC })),
+    },
+    {
+      key: 'gate4',
+      label: `Gate 4 — ${gate4 ? gate4.name : 'Sprint Finish'}`,
+      stages: [
+        { name: 'Interview Room', seconds: 5 * 60 },
+        { name: 'Sprint Finish: ' + gate4Exercises.map(e => e.name).join(' → '), seconds: 15 * 60 },
+      ],
+    },
+  ];
+
+  let currentModeIdx = 0;
+  let masterSeconds = 0;
   let running = false;
+  let interval = null;
 
-  function defaultDuration(exercise, gate){
-    if (gate.is_sprint_finish) return 600; // 10 min all-out sprint
-    if (exercise.unit === 'm' || exercise.unit === 'cal') return 300; // cardio ~5min
-    return 90; // strength AMRAP-style
+  function fmt(sec){
+    sec = Math.max(0, Math.floor(sec));
+    const m = Math.floor(sec/60).toString().padStart(2,'0');
+    const s = (sec%60).toString().padStart(2,'0');
+    return m+':'+s;
   }
 
-  function renderLineups(){
-    const build = (grouped) => categoryOrder
-      .filter(cat => grouped[cat] && grouped[cat].length)
-      .map(cat => `<div style="margin-bottom:.6vh;"><span style="opacity:.6;">${categoryLabel[cat]}:</span> ${grouped[cat].join(' & ')}</div>`)
-      .join('');
-    document.getElementById('lineupA').innerHTML = build(groupedA);
-    document.getElementById('lineupB').innerHTML = build(groupedB);
-  }
-  renderLineups();
-
-  function render(){
-    const cur = runOrder[idx];
-    document.getElementById('gateLabel').textContent = `GATE ${cur.gate.number} · ${cur.gate.name.toUpperCase()}`;
-    document.getElementById('exName').textContent = cur.exercise.name;
-    document.getElementById('exTarget').textContent = cur.exercise.benchmark_desc
-      ? `Benchmark: ${cur.exercise.benchmark_desc}` : 'Sprint finish — first to complete wins';
-    seconds = defaultDuration(cur.exercise, cur.gate);
-    updateTimerDisplay();
+  function renderTabs(){
+    document.getElementById('gateTabs').innerHTML = MODES.map((m,i) =>
+      `<button class="gate-tab ${i===currentModeIdx?'active':''}" onclick="switchMode(${i})">${m.label}</button>`
+    ).join('');
   }
 
-  function updateTimerDisplay(){
-    const m = Math.floor(Math.max(seconds,0) / 60).toString().padStart(2,'0');
-    const s = Math.floor(Math.max(seconds,0) % 60).toString().padStart(2,'0');
-    const el = document.getElementById('timerDisplay');
-    el.textContent = `${m}:${s}`;
-    el.classList.toggle('warn', seconds <= 10 && seconds > 0);
+  function switchMode(idx){
+    pauseClock();
+    currentModeIdx = idx;
+    masterSeconds = 0;
+    renderTabs();
+    renderBoard();
   }
 
-  function startTimer(){
-    if (running) return;
-    running = true;
-    timerInterval = setInterval(() => {
-      if (seconds > 0) { seconds--; updateTimerDisplay(); }
-      else { clearInterval(timerInterval); running = false; }
-    }, 1000);
+  function startClock(){ if(running) return; running=true; interval=setInterval(()=>{masterSeconds++; renderBoard();},1000); }
+  function pauseClock(){ running=false; clearInterval(interval); }
+  function resetClock(){ pauseClock(); masterSeconds=0; renderBoard(); }
+
+  function renderBoard(){
+    const mode = MODES[currentModeIdx];
+    document.getElementById('modeLabel').textContent = mode.label.toUpperCase();
+
+    const stages = mode.stages;
+    const totalPerCategory = stages.reduce((s,x) => s+x.seconds, 0);
+    const gateTotalDuration = OFFSET_SEC * (categoryOrder.length - 1) + totalPerCategory;
+
+    const clockEl = document.getElementById('masterClock');
+    clockEl.textContent = fmt(masterSeconds);
+    clockEl.classList.toggle('finished', masterSeconds >= gateTotalDuration);
+
+    document.getElementById('catGrid').innerHTML = categoryOrder.map((cat, i) => {
+      const offset = i * OFFSET_SEC;
+      const elapsed = masterSeconds - offset;
+
+      const namesA = (groupedA[cat] || []).join(' & ') || '—';
+      const namesB = (groupedB[cat] || []).join(' & ') || '—';
+      const athletesHtml = `<span class="side"><span class="team-tag">${fixture.team_a_name}:</span>${namesA}</span><span class="side"><span class="team-tag">${fixture.team_b_name}:</span>${namesB}</span>`;
+
+      let rowClass = '', stageLabel = '', stageName = '', remaining = '';
+
+      if (elapsed < 0) {
+        rowClass = 'is-wait'; stageLabel = 'Starts in'; stageName = fmt(-elapsed);
+      } else if (elapsed >= totalPerCategory) {
+        rowClass = 'is-done'; stageLabel = 'Status'; stageName = 'Finished';
+      } else {
+        rowClass = 'is-live';
+        let cum = 0, stageIdx = 0;
+        for (let s=0; s<stages.length; s++){ if (elapsed < cum+stages[s].seconds){ stageIdx=s; break; } cum += stages[s].seconds; }
+        stageLabel = `Stage ${stageIdx+1} of ${stages.length}`;
+        stageName = stages[stageIdx].name;
+        remaining = fmt(stages[stageIdx].seconds - (elapsed - cum));
+      }
+
+      return `<div class="cat-row ${rowClass}">
+          <div class="cat-name">${categoryLabel[cat]}</div>
+          <div class="cat-athletes">${athletesHtml}</div>
+          <div class="cat-stage"><span class="stagelabel">${stageLabel}</span>${stageName}</div>
+          <div class="cat-remaining">${remaining}</div>
+        </div>`;
+    }).join('');
   }
-  function pauseTimer(){ running = false; clearInterval(timerInterval); }
-  function resetTimer(){ pauseTimer(); render(); }
-  function nextExercise(){ pauseTimer(); idx = Math.min(idx+1, runOrder.length-1); render(); }
-  function prevExercise(){ pauseTimer(); idx = Math.max(idx-1, 0); render(); }
 
-  render();
+  renderTabs();
+  renderBoard();
 
-  // keyboard shortcuts for the person running the gate: space=start/pause, right/left=next/prev, r=reset
   document.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') { e.preventDefault(); running ? pauseTimer() : startTimer(); }
-    if (e.code === 'ArrowRight') nextExercise();
-    if (e.code === 'ArrowLeft') prevExercise();
-    if (e.code === 'KeyR') resetTimer();
+    if (e.code === 'Space') { e.preventDefault(); running ? pauseClock() : startClock(); }
+    if (e.code === 'KeyR') resetClock();
+    if (e.code === 'ArrowRight') switchMode(Math.min(currentModeIdx+1, MODES.length-1));
+    if (e.code === 'ArrowLeft') switchMode(Math.max(currentModeIdx-1, 0));
   });
 </script>
 

@@ -505,11 +505,14 @@ app.post('/fixture/:id/results', requireLogin, (req, res) => {
 
 // ============ CAST / TV DISPLAY (public, no login needed - gyms just load the URL on a screen) ============
 
-app.get('/cast/:fixtureId', (req, res) => {
+app.get('/cast/:fixtureId', requireLogin, (req, res) => {
   const fixture = db.prepare(`
     SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
     JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.fixtureId);
   if (!fixture) return res.status(404).send('Fixture not found');
+  if (!canManageFixture(req.session.user, fixture)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "Only the gyms competing in this fixture (or GLG Admin) can open the live match board." });
+  }
   const gates = db.prepare("SELECT * FROM gates ORDER BY number").all();
   const exercises = db.prepare("SELECT * FROM exercises ORDER BY gate_id, sort_order").all();
 

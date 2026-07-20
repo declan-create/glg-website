@@ -138,3 +138,28 @@ test('access control: GLG admin can manage results for any fixture', async () =>
   const res = await agent.get('/fixture/1/results');
   assert.strictEqual(res.status, 200);
 });
+
+test('cast display: requires login — anonymous visitors are redirected', async () => {
+  const res = await request(app).get('/cast/1');
+  assert.strictEqual(res.status, 302);
+  assert.match(res.headers.location, /\/login/);
+});
+
+test('cast display: a gym admin from a fixture\'s host gym can view it', async () => {
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const res = await agent.get('/cast/1');
+  assert.strictEqual(res.status, 200);
+});
+
+test('cast display: an unrelated gym admin is blocked', async () => {
+  const agent = request.agent(app);
+  await agent.post('/signup/gym').type('form').send({
+    gym_name: 'Cast Outsider Gym', admin_first_name: 'Cast', admin_last_name: 'Outsider',
+    email: 'castoutsider@example.com', password: 'TestPass123', region_id: 3,
+  });
+  const res = await agent.get('/cast/1');
+  assert.strictEqual(res.status, 403);
+});
