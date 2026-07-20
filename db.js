@@ -2,6 +2,32 @@ const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const path = require('path');
 
+// ============================================================================
+// EVENT CONFIG — edit THIS block for any future change to teams/event format.
+// Nothing else in this file needs to change for a team-name swap, adding a
+// team, or switching between "one-off trial" and "season" mode.
+// ============================================================================
+const EVENT_CONFIG = {
+  regionName: "Sydney North Shore",
+  regionSlug: "north-shore",
+  regionStatusLabel: "Live Trial",   // badge text shown on the site (e.g. "Live Trial", "Live", "Live Season")
+  eventMode: "trial",                // "trial" = single one-off fixture · "season" = full round robin
+  eventDate: "2026-07-24",           // used as the fixture date in trial mode
+
+  hostGym: {
+    name: "BFT Pymble",
+    address: "Pymble, NSW",
+    adminEmail: "admin@bftpymble.com.au",
+  },
+
+  // Add or remove team names here — everything downstream (athletes, roster
+  // categories, fixtures) is generated automatically to match this list.
+  teamNames: ["Gadigal", "Wangal"],
+};
+// ============================================================================
+
+// ============================================================================
+
 const dbPath = process.env.GLG_DB_PATH || path.join(__dirname, 'glg.db');
 const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
@@ -14,7 +40,8 @@ CREATE TABLE IF NOT EXISTS regions (
   slug TEXT UNIQUE NOT NULL,
   level TEXT NOT NULL, -- 'country' | 'state' | 'region'
   parent_id INTEGER REFERENCES regions(id),
-  status TEXT DEFAULT 'active' -- 'active' | 'coming_soon'
+  status TEXT DEFAULT 'active', -- 'active' | 'coming_soon'
+  status_label TEXT -- overrides the default "Live" badge text, e.g. "Live Trial"
 );
 
 CREATE TABLE IF NOT EXISTS users (
@@ -126,26 +153,26 @@ function seed() {
   const already = db.prepare("SELECT COUNT(*) c FROM regions").get().c;
   if (already > 0) return;
 
-  const insRegion = db.prepare("INSERT INTO regions (name, slug, level, parent_id, status) VALUES (?,?,?,?,?)");
-  const au = insRegion.run("Australia", "australia", "country", null, "active").lastInsertRowid;
-  const nsw = insRegion.run("New South Wales", "nsw", "state", au, "active").lastInsertRowid;
+  const insRegion = db.prepare("INSERT INTO regions (name, slug, level, parent_id, status, status_label) VALUES (?,?,?,?,?,?)");
+  const au = insRegion.run("Australia", "australia", "country", null, "active", null).lastInsertRowid;
+  const nsw = insRegion.run("New South Wales", "nsw", "state", au, "active", null).lastInsertRowid;
 
   const regionDefs = [
-    ["Sydney North Shore", "north-shore", "active"],
-    ["Sydney Eastern Suburbs", "eastern-suburbs", "coming_soon"],
-    ["Sydney Northern Beaches", "northern-beaches", "coming_soon"],
-    ["Sydney Inner West", "inner-west", "coming_soon"],
-    ["Sydney South", "sydney-south", "coming_soon"],
+    [EVENT_CONFIG.regionName, EVENT_CONFIG.regionSlug, "active", EVENT_CONFIG.regionStatusLabel],
+    ["Sydney Eastern Suburbs", "eastern-suburbs", "coming_soon", null],
+    ["Sydney Northern Beaches", "northern-beaches", "coming_soon", null],
+    ["Sydney Inner West", "inner-west", "coming_soon", null],
+    ["Sydney South", "sydney-south", "coming_soon", null],
   ];
   const regionIds = {};
-  for (const [name, slug, status] of regionDefs) {
-    regionIds[slug] = insRegion.run(name, slug, "region", nsw, status).lastInsertRowid;
+  for (const [name, slug, status, statusLabel] of regionDefs) {
+    regionIds[slug] = insRegion.run(name, slug, "region", nsw, status, statusLabel).lastInsertRowid;
   }
   // other states, coming soon, no regions yet (placeholder for nav breadth)
-  insRegion.run("Victoria", "vic", "state", au, "coming_soon");
-  insRegion.run("Queensland", "qld", "state", au, "coming_soon");
+  insRegion.run("Victoria", "vic", "state", au, "coming_soon", null);
+  insRegion.run("Queensland", "qld", "state", au, "coming_soon", null);
 
-  const northShore = regionIds["north-shore"];
+  const northShore = regionIds[EVENT_CONFIG.regionSlug];
 
   // Admin users (3 seats)
   const insUser = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,approved) VALUES (?,?,?,?,?,1)`);
@@ -154,23 +181,17 @@ function seed() {
   insUser.run("glynn@gymleagueglobal.com.au", hash("GLGadmin2026!"), "admin", "Glynn", "Pearman");
   insUser.run("matthew@gymleagueglobal.com.au", hash("GLGadmin2026!"), "admin", "Matthew", "Murphy");
 
-  // Gyms + gym admins + teams (North Shore pilot — 4 teams)
+  // Host gym + one team per name in EVENT_CONFIG.teamNames — add/remove a
+  // name in that config block to change the team count, nothing else here needs editing.
   const insGym = db.prepare("INSERT INTO gyms (name, region_id, admin_user_id, address) VALUES (?,?,?,?)");
   const insTeam = db.prepare("INSERT INTO teams (name, gym_id, region_id, division) VALUES (?,?,?,?)");
 
-  const gymData = [
-    { gym: "BFT Pymble", email: "admin@bftpymble.com.au", team: "Pymble Raptors", addr: "Pymble, NSW" },
-    { gym: "F45 Turramurra", email: "admin@f45turramurra.com.au", team: "Turramurra Titans", addr: "Turramurra, NSW" },
-    { gym: "CrossFit Chatswood", email: "admin@cfchatswood.com.au", team: "Chatswood Wolves", addr: "Chatswood, NSW" },
-    { gym: "Ninja Fitness Killara", email: "admin@ninjakillara.com.au", team: "Killara Ninjas", addr: "Killara, NSW" },
-  ];
-  const teamIds = [];
-  for (const g of gymData) {
-    const uid = insUser.run(g.email, hash("GymAdmin2026!"), "gym_admin", g.gym.split(" ")[0], "Admin").lastInsertRowid;
-    const gymId = insGym.run(g.gym, northShore, uid, g.addr).lastInsertRowid;
-    const teamId = insTeam.run(g.team, gymId, northShore, "Open").lastInsertRowid;
-    teamIds.push(teamId);
-  }
+  const hostAdminUid = insUser.run(EVENT_CONFIG.hostGym.adminEmail, hash("GymAdmin2026!"), "gym_admin", EVENT_CONFIG.hostGym.name.split(" ")[0], "Admin").lastInsertRowid;
+  const hostGymId = insGym.run(EVENT_CONFIG.hostGym.name, northShore, hostAdminUid, EVENT_CONFIG.hostGym.address).lastInsertRowid;
+
+  const teamIds = EVENT_CONFIG.teamNames.map(name =>
+    insTeam.run(name, hostGymId, northShore, "Open").lastInsertRowid
+  );
 
   // Athletes: 8 per team, covering all 5 categories exactly —
   // 1 Men's Singles, 1 Women's Singles, 2 Men's Doubles, 2 Women's Doubles,
@@ -184,7 +205,7 @@ function seed() {
     ["mixed_doubles", "M"], ["mixed_doubles", "F"],
   ];
 
-  // 4 teams x 8 athletes = 32 distinct names needed
+  // Name pools sized generously so this keeps working even if more teams are added later
   const malePool = ["Jack","Liam","Noah","Ethan","Lucas","Mason","Ryan","Oliver","Henry","James","Leo","Sam","Tom","Ben","Max","Cody"];
   const femalePool = ["Emma","Olivia","Ava","Mia","Chloe","Zoe","Grace","Sophie","Isla","Ruby","Ella","Amy","Lucy","Kate","Nina","Jade"];
   const surnamePool = ["Nguyen","Wilson","Chen","Baker","Singh","Thompson","Kelly","Roberts","Ahmed","Ferguson","Davies","Campbell","Reid","Walsh","Turner","Hughes"];
@@ -234,17 +255,24 @@ function seed() {
   insEx.run(g4,"Russian Twist","reps",30,30,"6kg(M)/4kg(W) x 30 each side",0,2);
   insEx.run(g4,"Row 500m","sec",null,null,"500m row, first to finish wins",1,3);
 
-  // Round robin schedule: 4 teams, 6 weeks (each pair plays at least once, repeat for weeks 4-6)
-  const pairs = [];
-  for (let i=0;i<teamIds.length;i++) for (let j=i+1;j<teamIds.length;j++) pairs.push([teamIds[i], teamIds[j]]);
-  // 4 teams -> 6 unique pairings -> perfect for a 6-week season, one fixture per week
+  // Fixture schedule — driven by EVENT_CONFIG.eventMode:
+  //   "trial"  -> one single fixture on EVENT_CONFIG.eventDate (current setting)
+  //   "season" -> full round robin, one week per unique pairing
   const insFixture = db.prepare("INSERT INTO fixtures (region_id, week, team_a_id, team_b_id, match_date, status) VALUES (?,?,?,?,?,?)");
-  const startDate = new Date("2026-07-24"); // trial date as week 1
-  pairs.forEach(([a,b], idx) => {
-    const week = idx + 1;
-    const d = new Date(startDate); d.setDate(d.getDate() + (week-1)*7);
-    insFixture.run(northShore, week, a, b, d.toISOString().slice(0,10), week===1 ? 'scheduled' : 'scheduled');
-  });
+
+  if (EVENT_CONFIG.eventMode === "trial") {
+    // Trial mode expects exactly 2 teams — one fixture, one date.
+    insFixture.run(northShore, 1, teamIds[0], teamIds[1], EVENT_CONFIG.eventDate, "scheduled");
+  } else {
+    const pairs = [];
+    for (let i = 0; i < teamIds.length; i++) for (let j = i + 1; j < teamIds.length; j++) pairs.push([teamIds[i], teamIds[j]]);
+    const startDate = new Date(EVENT_CONFIG.eventDate);
+    pairs.forEach(([a, b], idx) => {
+      const week = idx + 1;
+      const d = new Date(startDate); d.setDate(d.getDate() + (week - 1) * 7);
+      insFixture.run(northShore, week, a, b, d.toISOString().slice(0, 10), "scheduled");
+    });
+  }
 
   console.log("Seed complete.");
 }

@@ -72,7 +72,7 @@
             <div class="rname"><%= r.name %></div>
           </div>
           <% if (r.status === 'active') { %>
-            <a href="/regions/<%= r.slug %>" class="badge badge-live">Live — View</a>
+            <a href="/regions/<%= r.slug %>" class="badge badge-live"><%= r.status_label || 'Live' %> — View</a>
           <% } else { %>
             <span class="badge badge-soon">Coming Soon</span>
           <% } %>

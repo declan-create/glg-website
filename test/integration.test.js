@@ -104,8 +104,8 @@ test('full pipeline: submit category results through real HTTP form, verify scor
 
   const region = await agent.get('/regions/north-shore');
   assert.strictEqual(region.status, 200);
-  // Pymble Raptors should show 2pts (benchmark met + beat opponent), Turramurra 1pt
-  assert.match(region.text, /Pymble Raptors/);
+  // Gadigal should show on the region leaderboard after results are entered
+  assert.match(region.text, /Gadigal/);
 });
 
 test('access control: a gym admin CAN manage results for a fixture involving their own team', async () => {
@@ -118,11 +118,15 @@ test('access control: a gym admin CAN manage results for a fixture involving the
 });
 
 test('access control: a gym admin CANNOT manage results for a fixture that does not involve their team', async () => {
-  const agent = request.agent(app);
-  await agent.post('/login').type('form').send({
-    email: 'admin@ninjakillara.com.au', password: 'GymAdmin2026!', next: '/gym',
+  // Create a brand-new, unrelated gym (not part of the trial fixture) to prove
+  // the ownership check works even when there's only one gym in the seed data.
+  const outsiderAgent = request.agent(app);
+  await outsiderAgent.post('/signup/gym').type('form').send({
+    gym_name: 'Outsider Gym', admin_first_name: 'Out', admin_last_name: 'Sider',
+    email: 'outsider@example.com', password: 'TestPass123', region_id: 3,
+    team_names: 'Outsider Team',
   });
-  const res = await agent.get('/fixture/1/results'); // fixture 1 = Pymble vs Turramurra — Killara isn't involved
+  const res = await outsiderAgent.get('/fixture/1/results'); // fixture 1 = Gadigal vs Wangal — Outsider Gym isn't involved
   assert.strictEqual(res.status, 403);
 });
 
