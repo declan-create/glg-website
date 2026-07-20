@@ -25,6 +25,7 @@
   },
   "devDependencies": {
     "jsdom": "^29.1.1",
+    "playwright-core": "^1.61.1",
     "supertest": "^7.2.2"
   }
 }

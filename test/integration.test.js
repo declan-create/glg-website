@@ -14,6 +14,14 @@ process.env.SESSION_SECRET = 'test-secret';
 const request = require('supertest');
 const app = require('../server');
 
+// A real listening server (unlike supertest's in-process requests) is needed
+// for the one test that drives an actual browser via Playwright.
+let liveServer, PORT_UNDER_TEST;
+test.before(() => new Promise((resolve) => {
+  liveServer = app.listen(0, () => { PORT_UNDER_TEST = liveServer.address().port; resolve(); });
+}));
+test.after(() => new Promise((resolve) => liveServer.close(resolve)));
+
 test('home page loads', async () => {
   const res = await request(app).get('/');
   assert.strictEqual(res.status, 200);
@@ -162,6 +170,50 @@ test('cast display: an unrelated gym admin is blocked', async () => {
   });
   const res = await agent.get('/cast/1');
   assert.strictEqual(res.status, 403);
+});
+
+test('cast display: real browser test — clicking Start actually advances the clock (catches CSP issues jsdom cannot)', async (t) => {
+  // jsdom does NOT enforce Content-Security-Policy, so a bug where CSP silently
+  // blocks onclick="" attributes (like the real one found in this app — helmet's
+  // default script-src-attr 'none' blocks inline event handlers even when
+  // script-src allows inline <script> tags) would pass every jsdom-based test
+  // while genuinely being broken in every real browser. This test uses an actual
+  // Chromium via Playwright to catch that entire class of bug.
+  let chromiumPath;
+  try {
+    chromiumPath = require('child_process').execSync(
+      'find /opt/pw-browsers -type f -name "headless_shell" -o -type f -name "chrome" 2>/dev/null | head -1',
+      { encoding: 'utf8' }
+    ).trim();
+  } catch { chromiumPath = ''; }
+
+  if (!chromiumPath) {
+    t.skip('No system Chromium found — skipping real-browser CSP check (jsdom tests above still cover rendering/data correctness)');
+    return;
+  }
+
+  const { chromium } = require('playwright-core');
+  const browser = await chromium.launch({ executablePath: chromiumPath });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+
+    // log in as the host gym admin via the real form, then open the cast display
+    await page.goto('http://localhost:' + PORT_UNDER_TEST + '/login');
+    await page.fill('input[name=email]', 'admin@bftpymble.com.au');
+    await page.fill('input[name=password]', 'GymAdmin2026!');
+    await page.click('button[type=submit]');
+    await page.goto('http://localhost:' + PORT_UNDER_TEST + '/cast/1');
+
+    const clockBefore = await page.locator('#masterClock').innerText();
+    await page.click("button:has-text('Start')");
+    await page.waitForTimeout(2200);
+    const clockAfter = await page.locator('#masterClock').innerText();
+
+    assert.notStrictEqual(clockAfter, clockBefore, `Clock should advance after clicking Start in a real browser (before=${clockBefore}, after=${clockAfter}) — if this fails, check for CSP blocking inline event handlers (script-src-attr)`);
+  } finally {
+    await browser.close();
+  }
 });
 
 test('cast display: client-side JS actually runs without error and renders all 5 category rows', async () => {

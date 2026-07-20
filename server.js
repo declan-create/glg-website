@@ -20,6 +20,9 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
       scriptSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrcAttr: ["'unsafe-inline'"], // allows onclick/onchange/onsubmit attributes used throughout the views —
+                                          // helmet blocks these by default even when scriptSrc allows inline <script> tags,
+                                          // which silently broke every button on the Cast Display and several other pages.
       imgSrc: ["'self'", "data:"],
       fontSrc: ["'self'"],
     },
