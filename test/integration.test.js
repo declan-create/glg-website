@@ -381,3 +381,24 @@ test('cast display and watch page: no gate-switching tabs — everything flows o
     await browser.close();
   }
 });
+
+test('region page: shows Cast Display link only to the gym admin who can manage that fixture', async () => {
+  const anonRes = await request(app).get('/regions/north-shore');
+  assert.doesNotMatch(anonRes.text, /Cast Display/, 'Anonymous visitors should not see a Cast Display link');
+  assert.match(anonRes.text, /Watch Live/, 'Anonymous visitors should still see Watch Live');
+
+  const ownerAgent = request.agent(app);
+  await ownerAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const ownerRes = await ownerAgent.get('/regions/north-shore');
+  assert.match(ownerRes.text, /Cast Display/, 'The fixture-owning gym admin should see Cast Display');
+
+  const outsiderAgent = request.agent(app);
+  await outsiderAgent.post('/signup/gym').type('form').send({
+    gym_name: 'Region Page Outsider', admin_first_name: 'Out', admin_last_name: 'Sider',
+    email: 'regionpageoutsider@example.com', password: 'TestPass123', region_id: 3,
+  });
+  const outsiderRes = await outsiderAgent.get('/regions/north-shore');
+  assert.doesNotMatch(outsiderRes.text, /Cast Display/, 'An unrelated gym admin should not see Cast Display');
+});

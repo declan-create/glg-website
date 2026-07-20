@@ -114,6 +114,7 @@ app.get('/regions/:slug', (req, res) => {
     SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
     JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id
     WHERE f.region_id=? ORDER BY f.week`).all(region.id);
+  fixtures.forEach(f => { f.canManage = canManageFixture(req.session.user, f); });
   const leaderboard = scoring.getSeasonLeaderboard(region.id);
   res.render('region-detail', { title: region.name, region, teams, fixtures, leaderboard });
 });
