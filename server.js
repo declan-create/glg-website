@@ -34,7 +34,7 @@ app.use(helmet({
 // password a couple of times.
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 20,
+  max: 60, // generous enough for many people signing up/logging in from the same shared venue WiFi during a live event
   standardHeaders: true,
   legacyHeaders: false,
   message: 'Too many attempts from this device — please wait 15 minutes and try again.',
@@ -88,6 +88,11 @@ function requireRole(...roles) {
     next();
   };
 }
+
+const CATEGORY_LABEL = {
+  mens_singles: "Men's Singles", womens_singles: "Women's Singles",
+  mens_doubles: "Men's Doubles", womens_doubles: "Women's Doubles", mixed_doubles: "Mixed Doubles",
+};
 
 // ============ PUBLIC ROUTES ============
 
@@ -145,6 +150,7 @@ function roleHome(role) {
   if (role === 'admin') return '/admin';
   if (role === 'gym_admin') return '/gym';
   if (role === 'league_operator') return '/league';
+  if (role === 'judge') return '/judge';
   return '/profile';
 }
 
@@ -407,6 +413,33 @@ function canManageFixture(user, fixture) {
   return teamIds.includes(fixture.team_a_id) || teamIds.includes(fixture.team_b_id);
 }
 
+// A judge may only enter scores for the specific (fixture, gate) pairs
+// they've been assigned — this is intentionally narrower than canManageFixture.
+function judgeAssignedGates(userId, fixtureId) {
+  return db.prepare("SELECT gate_id FROM judge_assignments WHERE user_id=? AND fixture_id=?")
+    .all(userId, fixtureId).map(r => r.gate_id);
+}
+
+// ---- server-synced clock so the controller's Cast Display and the public
+// read-only view always agree on the current time, rather than each browser
+// running its own independent local timer. ----
+function getClockRow(fixtureId, mode) {
+  let row = db.prepare("SELECT * FROM fixture_clocks WHERE fixture_id=? AND mode=?").get(fixtureId, mode);
+  if (!row) {
+    const id = db.prepare("INSERT INTO fixture_clocks (fixture_id, mode, running, started_at, accumulated_seconds) VALUES (?,?,0,NULL,0)")
+      .run(fixtureId, mode).lastInsertRowid;
+    row = db.prepare("SELECT * FROM fixture_clocks WHERE id=?").get(id);
+  }
+  return row;
+}
+function clockElapsedSeconds(row) {
+  let seconds = row.accumulated_seconds || 0;
+  if (row.running && row.started_at) {
+    seconds += (Date.now() - new Date(row.started_at).getTime()) / 1000;
+  }
+  return seconds;
+}
+
 app.get('/fixture/:id/results', requireLogin, (req, res) => {
   const fixture = db.prepare(`
     SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
@@ -440,22 +473,23 @@ app.get('/fixture/:id/results', requireLogin, (req, res) => {
   const g4Map = {};
   for (const r of g4Results) g4Map[`${r.team_id}_${r.category}`] = r;
 
+  const judgeAssignments = db.prepare(`
+    SELECT ja.id, ja.gate_id, g.number as gate_number, g.name as gate_name, u.email as judge_email, u.first_name, u.last_name
+    FROM judge_assignments ja JOIN gates g ON g.id=ja.gate_id JOIN users u ON u.id=ja.user_id
+    WHERE ja.fixture_id=? ORDER BY g.number
+  `).all(fixture.id);
+
   res.render('fixture-results', {
     title: `Week ${fixture.week} Results`, fixture, gates, exercises,
-    categoryLabel, namesA, namesB, resultMap, g4Map,
+    categoryLabel, namesA, namesB, resultMap, g4Map, judgeAssignments,
   });
 });
 
-app.post('/fixture/:id/results', requireLogin, (req, res) => {
-  const fixtureId = req.params.id;
-  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(fixtureId);
-  if (!fixture) return res.status(404).render('error', { title: 'Not Found', message: 'Fixture not found.' });
-  if (!canManageFixture(req.session.user, fixture)) {
-    return res.status(403).render('error', { title: 'Access Denied', message: "You can only manage results for your own gym's fixtures." });
-  }
-  const body = req.body;
+// Shared by both the full-fixture results form (gym admin / GLG admin) and the
+// gate-scoped judge entry form — same upsert + recompute logic either way,
+// just restricted to a subset of exercise IDs when a judge is scoped to one gate.
+function applyResultsFromBody(fixture, body, allowedExerciseIds /* null = no restriction */) {
   const categories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles'];
-
   const exercises = db.prepare("SELECT e.*, g.is_sprint_finish FROM exercises e JOIN gates g ON g.id=e.gate_id").all();
 
   const upsertCategoryResult = (fixtureId, exerciseId, teamId, category, rawValue) => {
@@ -471,42 +505,173 @@ app.post('/fixture/:id/results', requireLogin, (req, res) => {
 
   for (const ex of exercises) {
     if (ex.is_sprint_finish) continue;
+    if (allowedExerciseIds && !allowedExerciseIds.includes(ex.id)) continue;
     for (const teamId of [fixture.team_a_id, fixture.team_b_id]) {
       for (const category of categories) {
         const key = `result_${teamId}_${ex.id}_${category}`;
         if (body[key] !== undefined && body[key] !== '') {
-          upsertCategoryResult(fixtureId, ex.id, teamId, category, parseFloat(body[key]));
+          upsertCategoryResult(fixture.id, ex.id, teamId, category, parseFloat(body[key]));
         }
       }
     }
   }
 
-  // Gate 4 (sprint finish) — per category, per team
-  for (const teamId of [fixture.team_a_id, fixture.team_b_id]) {
-    for (const category of categories) {
-      const completedKey = `g4_${teamId}_${category}_completed`;
-      const timeKey = `g4_${teamId}_${category}_time`;
-      if (body[completedKey] !== undefined) {
-        const completed = body[completedKey] === 'on' || body[completedKey] === '1' ? 1 : 0;
-        const time = body[timeKey] ? parseFloat(body[timeKey]) : null;
-        const existing = db.prepare("SELECT id FROM category_gate4_results WHERE fixture_id=? AND team_id=? AND category=?").get(fixtureId, teamId, category);
-        if (existing) {
-          db.prepare("UPDATE category_gate4_results SET completed=?, total_time_sec=? WHERE id=?").run(completed, time, existing.id);
-        } else {
-          db.prepare("INSERT INTO category_gate4_results (fixture_id, team_id, category, completed, total_time_sec) VALUES (?,?,?,?,?)")
-            .run(fixtureId, teamId, category, completed, time);
+  // Gate 4 (sprint finish) — only processed if the judge's allowed set includes
+  // a gate-4 exercise, or if there's no restriction at all (full-fixture form).
+  const gate4Allowed = !allowedExerciseIds || exercises.some(e => e.is_sprint_finish && allowedExerciseIds.includes(e.id));
+  if (gate4Allowed) {
+    for (const teamId of [fixture.team_a_id, fixture.team_b_id]) {
+      for (const category of categories) {
+        const completedKey = `g4_${teamId}_${category}_completed`;
+        const timeKey = `g4_${teamId}_${category}_time`;
+        if (body[completedKey] !== undefined) {
+          const completed = body[completedKey] === 'on' || body[completedKey] === '1' ? 1 : 0;
+          const time = body[timeKey] ? parseFloat(body[timeKey]) : null;
+          const existing = db.prepare("SELECT id FROM category_gate4_results WHERE fixture_id=? AND team_id=? AND category=?").get(fixture.id, teamId, category);
+          if (existing) {
+            db.prepare("UPDATE category_gate4_results SET completed=?, total_time_sec=? WHERE id=?").run(completed, time, existing.id);
+          } else {
+            db.prepare("INSERT INTO category_gate4_results (fixture_id, team_id, category, completed, total_time_sec) VALUES (?,?,?,?,?)")
+              .run(fixture.id, teamId, category, completed, time);
+          }
         }
       }
     }
   }
 
-  scoring.recomputeFixtureScores(fixtureId);
+  scoring.recomputeFixtureScores(fixture.id);
+}
+
+app.post('/fixture/:id/results', requireLogin, (req, res) => {
+  const fixtureId = req.params.id;
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(fixtureId);
+  if (!fixture) return res.status(404).render('error', { title: 'Not Found', message: 'Fixture not found.' });
+  if (!canManageFixture(req.session.user, fixture)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You can only manage results for your own gym's fixtures." });
+  }
+
+  applyResultsFromBody(fixture, req.body, null);
   db.prepare("UPDATE fixtures SET status='complete' WHERE id=?").run(fixtureId);
 
   res.redirect(`/fixture/${fixtureId}/results?saved=1`);
 });
 
+// ---- Judge assignment (gym admin / GLG admin assigns a judge to a gate for a fixture) ----
+app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
+  if (!fixture || !canManageFixture(req.session.user, fixture)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You can only assign judges for your own gym's fixtures." });
+  }
+  const { judge_email, gate_id } = req.body;
+  const judge = db.prepare("SELECT * FROM users WHERE email=? AND role='judge'").get((judge_email || '').trim().toLowerCase());
+  if (judge && gate_id) {
+    db.prepare("INSERT OR IGNORE INTO judge_assignments (user_id, fixture_id, gate_id) VALUES (?,?,?)")
+      .run(judge.id, fixture.id, gate_id);
+  }
+  res.redirect(`/fixture/${fixture.id}/results?judgeAssigned=1`);
+});
+
+app.post('/fixture/:id/unassign-judge/:assignmentId', requireLogin, (req, res) => {
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
+  if (!fixture || !canManageFixture(req.session.user, fixture)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "Access denied." });
+  }
+  db.prepare("DELETE FROM judge_assignments WHERE id=? AND fixture_id=?").run(req.params.assignmentId, fixture.id);
+  res.redirect(`/fixture/${fixture.id}/results`);
+});
+
+// ---- Judge dashboard & gate-scoped scoring ----
+app.get('/judge', requireLogin, requireRole('judge'), (req, res) => {
+  const assignments = db.prepare(`
+    SELECT ja.id as assignment_id, f.id as fixture_id, f.week, f.match_date,
+           ta.name as team_a_name, tb.name as team_b_name, g.id as gate_id, g.number as gate_number, g.name as gate_name
+    FROM judge_assignments ja
+    JOIN fixtures f ON f.id = ja.fixture_id
+    JOIN teams ta ON ta.id = f.team_a_id
+    JOIN teams tb ON tb.id = f.team_b_id
+    JOIN gates g ON g.id = ja.gate_id
+    WHERE ja.user_id = ?
+    ORDER BY f.week, g.number
+  `).all(req.session.user.id);
+  res.render('judge-dashboard', { title: 'Judge Dashboard', assignments });
+});
+
+app.get('/judge/fixture/:fixtureId/gate/:gateId', requireLogin, requireRole('judge'), (req, res) => {
+  const assigned = judgeAssignedGates(req.session.user.id, req.params.fixtureId);
+  if (!assigned.includes(parseInt(req.params.gateId))) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You're not assigned to judge this gate." });
+  }
+  const fixture = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.fixtureId);
+  const gate = db.prepare("SELECT * FROM gates WHERE id=?").get(req.params.gateId);
+  const exercises = db.prepare("SELECT * FROM exercises WHERE gate_id=? ORDER BY sort_order").all(gate.id);
+
+  const categoryLabel = CATEGORY_LABEL;
+  const categories = Object.keys(categoryLabel);
+  const namesFor = (teamId) => {
+    const rows = db.prepare("SELECT category, first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category IS NOT NULL").all(teamId);
+    const grouped = {};
+    for (const r of rows) (grouped[r.category] ||= []).push(`${r.first_name} ${r.last_name}`);
+    return grouped;
+  };
+  const namesA = namesFor(fixture.team_a_id), namesB = namesFor(fixture.team_b_id);
+
+  const catResults = db.prepare("SELECT * FROM category_results WHERE fixture_id=? AND exercise_id IN (" + exercises.map(()=>'?').join(',') + ")").all(fixture.id, ...exercises.map(e=>e.id));
+  const resultMap = {};
+  for (const r of catResults) resultMap[`${r.team_id}_${r.exercise_id}_${r.category}`] = r;
+
+  const g4Map = {};
+  if (gate.is_sprint_finish) {
+    const g4Results = db.prepare("SELECT * FROM category_gate4_results WHERE fixture_id=?").all(fixture.id);
+    for (const r of g4Results) g4Map[`${r.team_id}_${r.category}`] = r;
+  }
+
+  res.render('judge-gate-results', { title: `Judge — Gate ${gate.number}`, fixture, gate, exercises, categoryLabel, categories, namesA, namesB, resultMap, g4Map });
+});
+
+app.post('/judge/fixture/:fixtureId/gate/:gateId', requireLogin, requireRole('judge'), (req, res) => {
+  const assigned = judgeAssignedGates(req.session.user.id, req.params.fixtureId);
+  if (!assigned.includes(parseInt(req.params.gateId))) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You're not assigned to judge this gate." });
+  }
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.fixtureId);
+  const exerciseIds = db.prepare("SELECT id FROM exercises WHERE gate_id=?").all(req.params.gateId).map(e => e.id);
+
+  applyResultsFromBody(fixture, req.body, exerciseIds);
+
+  res.redirect(`/judge/fixture/${req.params.fixtureId}/gate/${req.params.gateId}?saved=1`);
+});
+
 // ============ CAST / TV DISPLAY (public, no login needed - gyms just load the URL on a screen) ============
+
+function boardDataFor(fixture) {
+  const gates = db.prepare("SELECT * FROM gates ORDER BY number").all();
+  const exercises = db.prepare("SELECT * FROM exercises ORDER BY gate_id, sort_order").all();
+  const groupedFor = (teamId) => {
+    const rows = db.prepare(
+      "SELECT category, first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category IS NOT NULL"
+    ).all(teamId);
+    const grouped = {};
+    for (const r of rows) (grouped[r.category] ||= []).push(`${r.first_name} ${r.last_name}`);
+    return grouped;
+  };
+  return {
+    gates, exercises, categoryLabel: CATEGORY_LABEL,
+    groupedA: groupedFor(fixture.team_a_id), groupedB: groupedFor(fixture.team_b_id),
+  };
+}
+
+// Live scores for the public watch view — every category_result and
+// category_gate4_result row entered so far for this fixture, keyed for easy lookup.
+function liveScoresFor(fixtureId) {
+  const rows = db.prepare("SELECT * FROM category_results WHERE fixture_id=?").all(fixtureId);
+  const g4rows = db.prepare("SELECT * FROM category_gate4_results WHERE fixture_id=?").all(fixtureId);
+  const byKey = {};
+  for (const r of rows) (byKey[`${r.team_id}_${r.category}`] ||= []).push({ exercise_id: r.exercise_id, points: r.points, raw_value: r.raw_value });
+  for (const r of g4rows) (byKey[`${r.team_id}_${r.category}`] ||= []).push({ exercise_id: 'gate4', points: r.points, completed: r.completed });
+  return byKey;
+}
 
 app.get('/cast/:fixtureId', requireLogin, (req, res) => {
   const fixture = db.prepare(`
@@ -516,24 +681,62 @@ app.get('/cast/:fixtureId', requireLogin, (req, res) => {
   if (!canManageFixture(req.session.user, fixture)) {
     return res.status(403).render('error', { title: 'Access Denied', message: "Only the gyms competing in this fixture (or GLG Admin) can open the live match board." });
   }
-  const gates = db.prepare("SELECT * FROM gates ORDER BY number").all();
-  const exercises = db.prepare("SELECT * FROM exercises ORDER BY gate_id, sort_order").all();
+  res.render('cast', { title: 'Live Display', layout: false, fixture, ...boardDataFor(fixture) });
+});
 
-  const categoryLabel = {
-    mens_singles: "Men's Singles", womens_singles: "Women's Singles",
-    mens_doubles: "Men's Doubles", womens_doubles: "Women's Doubles", mixed_doubles: "Mixed Doubles",
-  };
-  const groupedFor = (teamId) => {
-    const rows = db.prepare(
-      "SELECT category, first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category IS NOT NULL"
-    ).all(teamId);
-    const grouped = {};
-    for (const r of rows) (grouped[r.category] ||= []).push(`${r.first_name} ${r.last_name}`);
-    return grouped;
-  };
+// Public, read-only version — anyone can open this (e.g. spectators, family,
+// other gyms) to watch the same board and live scores, but with no
+// Start/Pause/Reset controls. The clock itself is server-synced, so this
+// always matches whatever the controller's Cast Display is showing.
+app.get('/watch/:fixtureId', (req, res) => {
+  const fixture = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.fixtureId);
+  if (!fixture) return res.status(404).send('Fixture not found');
+  res.render('watch', { title: 'Watch Live', layout: false, fixture, ...boardDataFor(fixture) });
+});
 
-  res.render('cast', { title: 'Live Display', layout: false, fixture, gates, exercises,
-    groupedA: groupedFor(fixture.team_a_id), groupedB: groupedFor(fixture.team_b_id), categoryLabel });
+// ---- Clock API ----
+// GET is public (both the controller and public viewers poll this).
+// POST (start/pause/reset) requires the same fixture-ownership check as Cast.
+app.get('/api/fixture/:id/clock/:mode', (req, res) => {
+  const row = getClockRow(req.params.id, req.params.mode);
+  res.json({ running: !!row.running, elapsedSeconds: clockElapsedSeconds(row) });
+});
+
+app.post('/api/fixture/:id/clock/:mode/start', requireLogin, (req, res) => {
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
+  if (!fixture || !canManageFixture(req.session.user, fixture)) return res.status(403).json({ error: 'forbidden' });
+  const row = getClockRow(req.params.id, req.params.mode);
+  if (!row.running) {
+    db.prepare("UPDATE fixture_clocks SET running=1, started_at=? WHERE id=?").run(new Date().toISOString(), row.id);
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/fixture/:id/clock/:mode/pause', requireLogin, (req, res) => {
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
+  if (!fixture || !canManageFixture(req.session.user, fixture)) return res.status(403).json({ error: 'forbidden' });
+  const row = getClockRow(req.params.id, req.params.mode);
+  if (row.running) {
+    const elapsed = clockElapsedSeconds(row);
+    db.prepare("UPDATE fixture_clocks SET running=0, started_at=NULL, accumulated_seconds=? WHERE id=?").run(elapsed, row.id);
+  }
+  res.json({ ok: true });
+});
+
+app.post('/api/fixture/:id/clock/:mode/reset', requireLogin, (req, res) => {
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
+  if (!fixture || !canManageFixture(req.session.user, fixture)) return res.status(403).json({ error: 'forbidden' });
+  const row = getClockRow(req.params.id, req.params.mode);
+  db.prepare("UPDATE fixture_clocks SET running=0, started_at=NULL, accumulated_seconds=0 WHERE id=?").run(row.id);
+  res.json({ ok: true });
+});
+
+// Live scores endpoint — polled by the public watch view (and could be used
+// by the Cast Display too) so newly entered judge scores appear without a refresh.
+app.get('/api/fixture/:id/live-scores', (req, res) => {
+  res.json(liveScoresFor(req.params.id));
 });
 
 // ============ ADMIN ============

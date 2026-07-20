@@ -21,7 +21,7 @@
       <a href="/guide/gym">Gym Guide</a>
       <a href="/guide/league">League Guide</a>
       <% if (currentUser) { %>
-        <a href="<%= currentUser.role==='admin' ? '/admin' : currentUser.role==='gym_admin' ? '/gym' : currentUser.role==='league_operator' ? '/league' : '/profile' %>" class="user-chip">Hi, <%= currentUser.first_name %></a>
+        <a href="<%= currentUser.role==='admin' ? '/admin' : currentUser.role==='gym_admin' ? '/gym' : currentUser.role==='league_operator' ? '/league' : currentUser.role==='judge' ? '/judge' : '/profile' %>" class="user-chip">Hi, <%= currentUser.first_name %></a>
         <a href="/logout">Log Out</a>
       <% } else { %>
         <a href="/login">Log In</a>

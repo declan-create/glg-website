@@ -61,7 +61,7 @@
             <td><%= f.match_date %></td>
             <td><%= f.team_a_name %> vs <%= f.team_b_name %></td>
             <td><span class="badge <%= f.status==='complete' ? 'badge-live' : 'badge-soon' %>"><%= f.status %></span></td>
-            <td><a href="/cast/<%= f.id %>" target="_blank" style="font-size:.8rem;color:var(--forest);font-weight:700;">Cast Display →</a></td>
+            <td><a href="/watch/<%= f.id %>" target="_blank" style="font-size:.8rem;color:var(--forest);font-weight:700;">Watch Live →</a></td>
           </tr>
         <% }) %>
       </table>

@@ -1,0 +1,24 @@
+<section class="section">
+  <div class="container">
+    <div class="section-eyebrow">Judge</div>
+    <h2>Your Assignments</h2>
+    <p class="lede">These are the gates you've been assigned to judge. Click one to enter scores as each exercise finishes.</p>
+
+    <div class="table-wrap">
+      <table>
+        <tr><th>Fixture</th><th>Week</th><th>Gate</th><th></th></tr>
+        <% if (assignments.length === 0) { %>
+          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem;">You haven't been assigned to any gates yet — check with the gym running your event.</td></tr>
+        <% } %>
+        <% assignments.forEach(a => { %>
+          <tr>
+            <td><%= a.team_a_name %> vs <%= a.team_b_name %></td>
+            <td>Week <%= a.week %></td>
+            <td>Gate <%= a.gate_number %> — <%= a.gate_name %></td>
+            <td><a href="/judge/fixture/<%= a.fixture_id %>/gate/<%= a.gate_id %>" class="btn btn-primary btn-sm">Enter Scores</a></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+  </div>
+</section>

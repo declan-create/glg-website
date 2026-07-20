@@ -44,18 +44,52 @@ the real HTTP routes — signup flows, role-based access control, and the full s
 | glynn@gymleagueglobal.com.au | GLGadmin2026! |
 | matthew@gymleagueglobal.com.au | GLGadmin2026! |
 
-**Gym Admins (North Shore pilot — 4 gyms):**
-| Gym | Email | Password |
-|---|---|---|
-| BFT Pymble | admin@bftpymble.com.au | GymAdmin2026! |
-| F45 Turramurra | admin@f45turramurra.com.au | GymAdmin2026! |
-| CrossFit Chatswood | admin@cfchatswood.com.au | GymAdmin2026! |
-| Ninja Fitness Killara | admin@ninjakillara.com.au | GymAdmin2026! |
+**Gym Admin (host gym for the trial — fields both Gadigal and Wangal):**
+| Email | Password |
+|---|---|
+| admin@bftpymble.com.au | GymAdmin2026! |
 
-**Sample athletes:** each team is seeded with a full 8-athlete roster covering all 5
-categories (1 Men's Singles, 1 Women's Singles, 2 Men's Doubles, 2 Women's Doubles, 1 Mixed
-Doubles pair). All use password `Athlete2026!` — e.g. `jack.nguyen1@example.com`. Full list
-in `db.js`.
+**Judges (unassigned by default — assign each to a gate from the fixture's "Assign Judges" section):**
+| Email | Password |
+|---|---|
+| judge1@gymleagueglobal.com.au | Judge2026! |
+| judge2@gymleagueglobal.com.au | Judge2026! |
+
+**Sample athletes:** each team (Gadigal, Wangal) is seeded with a full 8-athlete roster
+covering all 5 categories (1 Men's Singles, 1 Women's Singles, 2 Men's Doubles, 2 Women's
+Doubles, 1 Mixed Doubles pair). All use password `Athlete2026!` — e.g.
+`jack.nguyen1@example.com`. Full list in `db.js`.
+
+---
+
+## Judges, the Live Match Board, and the Public Watch Page
+
+**Judges** are a separate account type that can only enter scores for the specific gate
+they're assigned to:
+1. A gym admin (or GLG Admin) goes to a fixture's Results page and assigns a judge's email
+   to a gate.
+2. The judge logs in at the normal `/login` page and lands on their own dashboard listing
+   only their assigned gate(s).
+3. Opening a gate shows just that gate's exercises — the judge enters scores as each
+   exercise finishes rather than waiting to fill in one giant form at the end.
+4. A judge who isn't assigned to a gate gets a clear "Access Denied," both for viewing and
+   for submitting — verified with automated tests.
+
+**The clock is server-synced**, not local to one browser. Starting, pausing, or resetting the
+timer from the Cast Display updates the server; every viewer — the controller and anyone on
+the public watch page — reads from that same server state, so they always agree on the time.
+
+**Two views of the same match:**
+- **`/cast/:fixtureId`** — the controller's screen (requires login as a gym admin from one of
+  the two competing teams, or a GLG Admin). Has the Start/Pause/Reset buttons.
+- **`/watch/:fixtureId`** — public, no login required. Same live board and same clock, but
+  with no controls — safe to share with spectators, family, or other gyms. Also polls for
+  live scores as judges enter them.
+
+Both pages have a **Fullscreen** button (top right) using the browser's real Fullscreen API —
+hides the browser's address bar and tabs for a cleaner display on a TV or projector. Browsers
+require a real click to trigger this (a security rule), so it can't happen automatically on
+page load.
 
 ---
 

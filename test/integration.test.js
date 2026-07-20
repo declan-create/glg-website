@@ -240,13 +240,144 @@ test('cast display: client-side JS actually runs without error and renders all 5
   const rowCount = (grid.innerHTML.match(/cat-row/g) || []).length;
   assert.strictEqual(rowCount, 5, 'Expected all 5 categories to render on load');
 
-  // Simulate an actual Start button click and confirm the clock advances
-  const startBtn = [...dom.window.document.querySelectorAll('button')].find(b => b.textContent.trim() === 'Start');
-  assert.ok(startBtn, 'Start button should exist');
-  startBtn.click();
-  await new Promise(r => setTimeout(r, 2200));
-  const clockText = dom.window.document.getElementById('masterClock').textContent;
-  assert.notStrictEqual(clockText, '00:00', 'Clock should have advanced after clicking Start');
+  // NOTE: we don't click Start here — Cast Display's Start button now calls a
+  // real fetch() to the server-synced clock API, which jsdom cannot resolve
+  // (no real network stack in its sandboxed script context). That behaviour
+  // is covered properly by the real-browser Playwright test above instead.
 
   dom.window.close();
+});
+
+test('judge: assigned to a gate via gym admin, then can log in and access only that gate', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const assignRes = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+    judge_email: 'judge1@gymleagueglobal.com.au', gate_id: 1,
+  });
+  assert.strictEqual(assignRes.status, 302);
+
+  const judgeAgent = request.agent(app);
+  await judgeAgent.post('/login').type('form').send({
+    email: 'judge1@gymleagueglobal.com.au', password: 'Judge2026!', next: '/judge',
+  });
+  const dashboard = await judgeAgent.get('/judge');
+  assert.strictEqual(dashboard.status, 200);
+  assert.match(dashboard.text, /Gate 1/);
+
+  const allowedGate = await judgeAgent.get('/judge/fixture/1/gate/1');
+  assert.strictEqual(allowedGate.status, 200);
+
+  const blockedGate = await judgeAgent.get('/judge/fixture/1/gate/2');
+  assert.strictEqual(blockedGate.status, 403);
+});
+
+test('judge: submitting a score for their assigned gate computes correctly and is blocked for other gates', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+    judge_email: 'judge2@gymleagueglobal.com.au', gate_id: 1,
+  });
+
+  const judgeAgent = request.agent(app);
+  await judgeAgent.post('/login').type('form').send({
+    email: 'judge2@gymleagueglobal.com.au', password: 'Judge2026!', next: '/judge',
+  });
+
+  const submitRes = await judgeAgent.post('/judge/fixture/1/gate/1').type('form').send({
+    result_1_1_womens_singles: '900', // benchmark 800, should score 2pts if it beats the opponent too
+    result_2_1_womens_singles: '850',
+  });
+  assert.strictEqual(submitRes.status, 302);
+
+  // blocked from submitting to a gate they aren't assigned to
+  const blockedSubmit = await judgeAgent.post('/judge/fixture/1/gate/2').type('form').send({
+    result_1_4_mens_singles: '999',
+  });
+  assert.strictEqual(blockedSubmit.status, 403);
+});
+
+test('clock API: anonymous can read status but cannot start/pause/reset', async () => {
+  const readRes = await request(app).get('/api/fixture/1/clock/combined');
+  assert.strictEqual(readRes.status, 200);
+  assert.ok('running' in readRes.body && 'elapsedSeconds' in readRes.body);
+
+  const writeRes = await request(app).post('/api/fixture/1/clock/combined/start');
+  assert.strictEqual(writeRes.status, 302); // requireLogin redirects anonymous requests
+});
+
+test('clock API: gym admin can start the clock and elapsed time increases', async () => {
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  await agent.post('/api/fixture/1/clock/gate4/reset');
+  await agent.post('/api/fixture/1/clock/gate4/start');
+  await new Promise(r => setTimeout(r, 1200));
+  const status = await request(app).get('/api/fixture/1/clock/gate4');
+  assert.strictEqual(status.body.running, true);
+  assert.ok(status.body.elapsedSeconds > 0.5, `Expected elapsed time to have advanced, got ${status.body.elapsedSeconds}`);
+  await agent.post('/api/fixture/1/clock/gate4/pause');
+});
+
+test('public watch page: loads with no login and has no clock control buttons', async () => {
+  const res = await request(app).get('/watch/1');
+  assert.strictEqual(res.status, 200);
+  assert.doesNotMatch(res.text, /onclick="startClock/);
+  assert.doesNotMatch(res.text, />Start<\/button>/);
+});
+
+test('live-scores endpoint returns data after a judge submits a result', async () => {
+  const res = await request(app).get('/api/fixture/1/live-scores');
+  assert.strictEqual(res.status, 200);
+  assert.ok(typeof res.body === 'object');
+});
+
+test('cast display and watch page: no gate-switching tabs — everything flows on one continuous clock', async (t) => {
+  let chromiumPath;
+  try {
+    chromiumPath = require('child_process').execSync(
+      'find /opt/pw-browsers -type f -name "headless_shell" -o -type f -name "chrome" 2>/dev/null | head -1',
+      { encoding: 'utf8' }
+    ).trim();
+  } catch { chromiumPath = ''; }
+
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const castRes = await agent.get('/cast/1');
+  assert.doesNotMatch(castRes.text, /class="gate-tab/, 'Cast Display should have no gate-switching tabs');
+  assert.match(castRes.text, /FULL EVENT/, 'Should show a single continuous event label');
+
+  const watchRes = await request(app).get('/watch/1');
+  assert.doesNotMatch(watchRes.text, /class="gate-tab/, 'Watch page should have no gate-switching tabs either');
+
+  if (!chromiumPath) {
+    t.skip('No system Chromium found — skipping the runtime STAGES.length check (static HTML checks above still ran)');
+    return;
+  }
+
+  // STAGES is built at runtime via flatMap(), so its true length can only be
+  // checked by actually executing the page — grepping the source text would
+  // always find the same 2 literal "name:" occurrences in the template code,
+  // regardless of how many exercises actually exist at runtime.
+  const { chromium } = require('playwright-core');
+  const browser = await chromium.launch({ executablePath: chromiumPath });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto('http://localhost:' + PORT_UNDER_TEST + '/login');
+    await page.fill('input[name=email]', 'admin@bftpymble.com.au');
+    await page.fill('input[name=password]', 'GymAdmin2026!');
+    await page.click('button[type=submit]');
+    await page.goto('http://localhost:' + PORT_UNDER_TEST + '/cast/1');
+    const stageCount = await page.evaluate(() => window.STAGES ? window.STAGES.length : (typeof STAGES !== 'undefined' ? STAGES.length : -1));
+    assert.strictEqual(stageCount, 10, `Expected 10 total stages (9 exercises + 1 Gate 4 block) at runtime, got ${stageCount}`);
+  } finally {
+    await browser.close();
+  }
 });

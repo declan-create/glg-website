@@ -146,6 +146,31 @@ CREATE TABLE IF NOT EXISTS category_gate4_results (
   points INTEGER DEFAULT 0,
   UNIQUE(fixture_id, team_id, category)
 );
+
+-- A judge is assigned to one gate for one fixture — they can only enter
+-- scores for exercises within that gate. One judge can hold several
+-- assignments (different gates, different fixtures).
+CREATE TABLE IF NOT EXISTS judge_assignments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER REFERENCES users(id),
+  fixture_id INTEGER REFERENCES fixtures(id),
+  gate_id INTEGER REFERENCES gates(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE(user_id, fixture_id, gate_id)
+);
+
+-- Server-side clock state so the Cast Display's timer and the public
+-- read-only view always show the same running time, rather than each
+-- browser tracking its own independent local clock.
+CREATE TABLE IF NOT EXISTS fixture_clocks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fixture_id INTEGER REFERENCES fixtures(id),
+  mode TEXT NOT NULL, -- 'combined' | 'gate4'
+  running INTEGER DEFAULT 0,
+  started_at TEXT, -- ISO timestamp of when it was last (re)started, NULL if paused/reset
+  accumulated_seconds REAL DEFAULT 0, -- seconds banked from previous start/pause cycles
+  UNIQUE(fixture_id, mode)
+);
 `);
 
 // ============ SEED (idempotent) ============
@@ -180,6 +205,10 @@ function seed() {
   insUser.run("declan@gymleagueglobal.com.au", hash("GLGadmin2026!"), "admin", "Declan", "Murphy");
   insUser.run("glynn@gymleagueglobal.com.au", hash("GLGadmin2026!"), "admin", "Glynn", "Pearman");
   insUser.run("matthew@gymleagueglobal.com.au", hash("GLGadmin2026!"), "admin", "Matthew", "Murphy");
+
+  // Sample judge accounts (unassigned by default — assign them to a gate from the fixture page)
+  insUser.run("judge1@gymleagueglobal.com.au", hash("Judge2026!"), "judge", "Sam", "Judge1");
+  insUser.run("judge2@gymleagueglobal.com.au", hash("Judge2026!"), "judge", "Alex", "Judge2");
 
   // Host gym + one team per name in EVENT_CONFIG.teamNames — add/remove a
   // name in that config block to change the team count, nothing else here needs editing.

@@ -21,22 +21,16 @@
     padding:.6rem 1.2rem;border-radius:8px;cursor:pointer;text-transform:uppercase;}
   .gate-tab.active{background:var(--lime);color:var(--forest);border-color:var(--lime);}
 
-  .clock-row{display:flex;align-items:center;justify-content:center;gap:2rem;margin:2rem 0 1.5rem;}
+  .clock-row{text-align:center;margin:2rem 0 1.5rem;}
   .master-clock{font-family:'Roboto Mono',monospace;font-weight:700;font-size:5rem;letter-spacing:.02em;}
   .master-clock.finished{color:var(--lime);}
   .clock-label{font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:.14em;color:#8AA398;font-size:.85rem;text-align:center;margin-bottom:.3rem;}
-  .clock-controls{display:flex;gap:.6rem;}
-  .clock-controls button{background:rgba(241,245,249,.1);color:var(--white);border:1px solid rgba(241,245,249,.2);
-    padding:.7rem 1.4rem;border-radius:8px;font-family:'Barlow Condensed',sans-serif;font-weight:700;
-    font-size:.9rem;cursor:pointer;letter-spacing:.05em;text-transform:uppercase;}
-  .clock-controls button:hover{background:var(--lime);color:var(--forest);border-color:var(--lime);}
-  .clock-controls button.danger:hover{background:#DC2626;color:#fff;border-color:#DC2626;}
 
   .cat-grid{display:grid;grid-template-columns:1fr;gap:.7rem;margin-top:1rem;}
-  .cat-row{display:grid;grid-template-columns:1.3fr 1.6fr 1.6fr 1fr;gap:1rem;align-items:center;
+  .cat-row{display:grid;grid-template-columns:1.1fr 1.4fr 1.4fr .7fr .8fr;gap:1rem;align-items:center;
     background:rgba(241,245,249,.05);border:1px solid rgba(241,245,249,.1);border-radius:10px;padding:1rem 1.4rem;}
   .cat-row.is-live{border-color:var(--lime);background:rgba(163,230,53,.08);}
-  .cat-row.is-done{opacity:.45;}
+  .cat-row.is-done{opacity:.6;}
   .cat-name{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;color:var(--lime);}
   .cat-athletes{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:.85rem;line-height:1.5;}
   .cat-athletes .side{display:block;}
@@ -44,6 +38,10 @@
   .cat-stage{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;}
   .cat-stage .stagelabel{display:block;font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.65rem;letter-spacing:.12em;color:#8AA398;text-transform:uppercase;margin-bottom:.15rem;}
   .cat-remaining{font-family:'Roboto Mono',monospace;font-weight:700;font-size:1.6rem;text-align:right;}
+  .cat-scores{text-align:right;}
+  .cat-scores .scoreline{font-family:'Barlow Condensed',sans-serif;font-weight:700;font-size:.85rem;}
+  .cat-scores .scoreline .a{color:var(--lime);}
+  .cat-scores .scoreline .b{color:#C7D0CB;}
 
   .legend{display:flex;gap:1.5rem;justify-content:center;margin-top:1.5rem;font-size:.78rem;color:#8AA398;font-family:'Barlow Condensed',sans-serif;font-weight:600;letter-spacing:.04em;}
   .legend span::before{content:"● ";}
@@ -58,21 +56,14 @@
   <div class="board-top">
     <div>
       <div class="board-fixture"><%= fixture.team_a_name %> <span style="color:#4E655B;">vs</span> <%= fixture.team_b_name %></div>
-      <div class="board-sub">WEEK <%= fixture.week %> · LIVE MATCH BOARD (CONTROLLER)</div>
+      <div class="board-sub">WEEK <%= fixture.week %> · LIVE — WATCHING</div>
     </div>
     <button class="fullscreen-btn" onclick="toggleFullscreen()">⛶ Fullscreen</button>
   </div>
 
   <div class="clock-row">
-    <div>
-      <div class="clock-label">FULL EVENT — GATES 1–4</div>
-      <div class="master-clock" id="masterClock">00:00</div>
-    </div>
-    <div class="clock-controls">
-      <button onclick="startClock()">Start</button>
-      <button onclick="pauseClock()">Pause</button>
-      <button class="danger" onclick="resetClock()">Reset</button>
-    </div>
+    <div class="clock-label">FULL EVENT — GATES 1–4</div>
+    <div class="master-clock" id="masterClock">00:00</div>
   </div>
 
   <div class="cat-grid" id="catGrid"></div>
@@ -92,20 +83,18 @@
   const groupedB = <%- JSON.stringify(groupedB) %>;
   const categoryLabel = <%- JSON.stringify(categoryLabel) %>;
   const fixture = { team_a_name: <%- JSON.stringify(fixture.team_a_name) %>, team_b_name: <%- JSON.stringify(fixture.team_b_name) %> };
+  const TEAM_A_ID = <%= fixture.team_a_id %>;
+  const TEAM_B_ID = <%= fixture.team_b_id %>;
 
   const categoryOrder = ['mens_singles','womens_singles','mens_doubles','womens_doubles','mixed_doubles'];
   const OFFSET_SEC = 5 * 60;
   const STAGE_SEC = 5 * 60;
-  const CLOCK_MODE = 'full_event'; // one continuous clock for the whole fixture
+  const CLOCK_MODE = 'full_event';
 
   const gates123 = gates.filter(g => !g.is_sprint_finish).sort((a,b) => a.number - b.number);
   const gate4 = gates.find(g => g.is_sprint_finish);
   const gate4Exercises = gate4 ? exercises.filter(e => e.gate_id === gate4.id) : [];
 
-  // One continuous list: the 9 real exercises from Gates 1-3, then a single
-  // 15-minute Gate 4 stage at the end — same total length as any other gate,
-  // just run as one block instead of 3 separate 5-minute exercises. No manual
-  // switching between gates; everything flows automatically off one clock.
   const STAGES = [
     ...gates123.flatMap(g => exercises.filter(e => e.gate_id === g.id).map(e => ({ name: `Gate ${g.number}: ${e.name}`, seconds: STAGE_SEC }))),
     { name: `Gate 4: Sprint Finish (${gate4Exercises.map(e=>e.name).join(' → ')})`, seconds: 15 * 60 },
@@ -114,6 +103,7 @@
   const TOTAL_DURATION = OFFSET_SEC * (categoryOrder.length - 1) + TOTAL_PER_CATEGORY;
 
   let serverElapsed = 0, serverRunning = false, lastPollTime = Date.now();
+  let liveScores = {};
 
   function fmt(sec){ sec=Math.max(0,Math.floor(sec)); return String(Math.floor(sec/60)).padStart(2,'0')+':'+String(sec%60).padStart(2,'0'); }
 
@@ -121,14 +111,15 @@
     try {
       const res = await fetch(`/api/fixture/${FIXTURE_ID}/clock/${CLOCK_MODE}`);
       const data = await res.json();
-      serverElapsed = data.elapsedSeconds;
-      serverRunning = data.running;
-      lastPollTime = Date.now();
-    } catch (e) { /* keep last known state on a transient network hiccup */ }
+      serverElapsed = data.elapsedSeconds; serverRunning = data.running; lastPollTime = Date.now();
+    } catch (e) {}
   }
-  async function startClock(){ await fetch(`/api/fixture/${FIXTURE_ID}/clock/${CLOCK_MODE}/start`, { method: 'POST' }); pollClock(); }
-  async function pauseClock(){ await fetch(`/api/fixture/${FIXTURE_ID}/clock/${CLOCK_MODE}/pause`, { method: 'POST' }); pollClock(); }
-  async function resetClock(){ await fetch(`/api/fixture/${FIXTURE_ID}/clock/${CLOCK_MODE}/reset`, { method: 'POST' }); pollClock(); }
+  async function pollScores(){
+    try {
+      const res = await fetch(`/api/fixture/${FIXTURE_ID}/live-scores`);
+      liveScores = await res.json();
+    } catch (e) {}
+  }
 
   function currentDisplaySeconds(){
     if (!serverRunning) return serverElapsed;
@@ -160,13 +151,28 @@
         stageName = STAGES[stageIdx].name;
         remaining = fmt(STAGES[stageIdx].seconds - (elapsed-cum));
       }
+
       return `<div class="cat-row ${rowClass}">
           <div class="cat-name">${categoryLabel[cat]}</div>
           <div class="cat-athletes">${athletesHtml}</div>
           <div class="cat-stage"><span class="stagelabel">${stageLabel}</span>${stageName}</div>
           <div class="cat-remaining">${remaining}</div>
+          <div class="cat-scores" data-cat="${cat}"></div>
         </div>`;
     }).join('');
+
+    // fill in the score column separately, since team IDs (not "teamA"/"teamB") are the real live-scores keys
+    categoryOrder.forEach(cat => {
+      const cell = document.querySelector(`.cat-scores[data-cat="${cat}"]`);
+      if (!cell) return;
+      const teamAKey = Object.keys(liveScores).find(k => k.endsWith('_' + cat) && k.startsWith(String(TEAM_A_ID) + '_'));
+      const teamBKey = Object.keys(liveScores).find(k => k.endsWith('_' + cat) && k.startsWith(String(TEAM_B_ID) + '_'));
+      const sumPts = (key) => (liveScores[key] || []).reduce((s, r) => s + (r.points || 0), 0);
+      const ptsA = teamAKey ? sumPts(teamAKey) : 0;
+      const ptsB = teamBKey ? sumPts(teamBKey) : 0;
+      const anyEntries = (liveScores[teamAKey] || []).length || (liveScores[teamBKey] || []).length;
+      cell.innerHTML = anyEntries ? `<div class="scoreline"><span class="a">${ptsA}</span> – <span class="b">${ptsB}</span></div>` : '';
+    });
   }
 
   function toggleFullscreen(){
@@ -174,14 +180,10 @@
     else document.exitFullscreen();
   }
 
-  pollClock().then(renderBoard);
-  setInterval(renderBoard, 200);   // smooth tick between polls
-  setInterval(pollClock, 1000);    // stay in sync with the server / other viewers
-
-  document.addEventListener('keydown', (e) => {
-    if (e.code === 'Space') { e.preventDefault(); serverRunning ? pauseClock() : startClock(); }
-    if (e.code === 'KeyR') resetClock();
-  });
+  Promise.all([pollClock(), pollScores()]).then(renderBoard);
+  setInterval(renderBoard, 200);
+  setInterval(pollClock, 1000);
+  setInterval(() => pollScores().then(renderBoard), 3000);
 </script>
 
 </body>
