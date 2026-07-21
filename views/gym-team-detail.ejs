@@ -32,7 +32,7 @@
 
     <% roster.forEach(r => { %>
       <div class="card" style="margin-top:.8rem;">
-        <form method="POST" action="/gym/team/<%= team.id %>/update-member" style="display:grid;grid-template-columns:1fr 1fr 1.4fr .7fr 1.3fr auto;gap:.7rem;align-items:end;">
+        <form method="POST" action="/gym/team/<%= team.id %>/update-member" style="display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr .7fr 1.3fr auto;gap:.7rem;align-items:end;">
           <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
           <div>
             <label style="margin-top:0;">First Name</label>
@@ -45,6 +45,10 @@
           <div>
             <label style="margin-top:0;">Email</label>
             <input type="email" name="email" value="<%= r.email %>" required>
+          </div>
+          <div>
+            <label style="margin-top:0;">Phone</label>
+            <input type="text" name="phone" value="<%= r.phone || '' %>">
           </div>
           <div>
             <label style="margin-top:0;">Gender</label>
@@ -84,7 +88,7 @@
     <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Add a New Member</h3>
     <p class="lede">For anyone who hasn't signed up themselves yet. They'll be able to log in with the email below and the default password <strong>GLGWelcome2026!</strong> — worth passing that along to them directly since there's no automatic email sent yet.</p>
     <div class="card">
-      <form method="POST" action="/gym/team/<%= team.id %>/add-member" style="display:grid;grid-template-columns:1fr 1fr 1.4fr .7fr 1.3fr auto;gap:.7rem;align-items:end;">
+      <form method="POST" action="/gym/team/<%= team.id %>/add-member" style="display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr .7fr 1.3fr auto;gap:.7rem;align-items:end;">
         <div>
           <label style="margin-top:0;">First Name</label>
           <input type="text" name="first_name" required>
@@ -96,6 +100,10 @@
         <div>
           <label style="margin-top:0;">Email</label>
           <input type="email" name="email" required>
+        </div>
+        <div>
+          <label style="margin-top:0;">Phone</label>
+          <input type="text" name="phone">
         </div>
         <div>
           <label style="margin-top:0;">Gender</label>

@@ -593,3 +593,135 @@ test('access control: an unrelated gym admin cannot reset another gym\'s member 
   const res = await outsiderAgent.post('/gym/team/1/reset-password').type('form').send({ athlete_id: 1 });
   assert.strictEqual(res.status, 404);
 });
+
+test('judge assignment: creates a new judge account on the fly and lets them log in immediately', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const assignRes = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+    judge_first_name: 'Test', judge_last_name: 'Judge', judge_phone: '0400 000 111',
+    judge_email: 'newjudgetest@example.com', gate_id: 1,
+  });
+  assert.strictEqual(assignRes.status, 302);
+  assert.match(assignRes.headers.location, /judgeAssigned=1/);
+
+  const judgeAgent = request.agent(app);
+  const loginRes = await judgeAgent.post('/login').type('form').send({
+    email: 'newjudgetest@example.com', password: 'GLGWelcome2026!', next: '/judge',
+  });
+  assert.strictEqual(loginRes.status, 302);
+  const dashRes = await judgeAgent.get('/judge');
+  assert.match(dashRes.text, /Gate 1/);
+});
+
+test('judge assignment: reassigning the same email does not create a duplicate account', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+    judge_first_name: 'Dup', judge_email: 'duplicatejudgetest@example.com', gate_id: 1,
+  });
+  const secondAssign = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+    judge_email: 'duplicatejudgetest@example.com', gate_id: 2,
+  });
+  assert.strictEqual(secondAssign.status, 302);
+
+  const dashRes = await gymAgent.get('/fixture/1/results');
+  const occurrences = (dashRes.text.match(/duplicatejudgetest@example\.com/g) || []).length;
+  assert.strictEqual(occurrences, 2, 'Should appear twice (once per gate assignment), from one account — not a duplicate account');
+});
+
+test('judge assignment: rejects assigning an email that belongs to a non-judge account', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  // Use the gym admin's own email — guaranteed to exist and stay non-judge
+  // throughout the run, unlike a TBA placeholder another test might rename.
+  const res = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+    judge_first_name: 'Should', judge_email: 'admin@bftpymble.com.au', gate_id: 1,
+  });
+  assert.match(res.headers.location, /judgeError=notjudge/);
+});
+
+test('phone number: captured correctly on athlete sign-up and editable via gym admin member management', async () => {
+  const athleteAgent = request.agent(app);
+  const signupRes = await athleteAgent.post('/signup/athlete').type('form').send({
+    first_name: 'Phone', last_name: 'CheckTest', email: 'phonechecktest@example.com',
+    password: 'TestPass123', gender: 'F', phone: '0455 999 888', region_id: 3, team_choice: 'assign',
+  });
+  assert.strictEqual(signupRes.status, 302);
+  const profileRes = await athleteAgent.get('/profile');
+  assert.match(profileRes.text, /0455 999 888/);
+
+  // gym admin editing a member's phone
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const teamPage = await gymAgent.get('/gym/team/1');
+  const athleteIdMatch = teamPage.text.match(/name="athlete_id" value="(\d+)"/);
+  const athleteId = athleteIdMatch[1];
+  const updateRes = await gymAgent.post('/gym/team/1/update-member').type('form').send({
+    athlete_id: athleteId, first_name: 'Phone', last_name: 'Edited',
+    email: 'phoneeditedtest@example.com', phone: '0466 777 555', gender: 'M', category: 'mens_singles',
+  });
+  assert.strictEqual(updateRes.status, 302);
+  const afterRes = await gymAgent.get('/gym/team/1');
+  assert.match(afterRes.text, /0466 777 555/);
+});
+
+test('account page: gym admin can update their own phone number', async () => {
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  const res = await agent.post('/account/update-details').type('form').send({
+    first_name: 'BFT', last_name: 'Admin', phone: '0499 222 333',
+  });
+  assert.strictEqual(res.status, 302);
+  assert.match(res.headers.location, /detailsSaved=1/);
+  const accountRes = await agent.get('/account');
+  assert.match(accountRes.text, /0499 222 333/);
+});
+
+test('live scores: an already-open watch page picks up a newly submitted score without reloading', async (t) => {
+  let chromiumPath;
+  try {
+    chromiumPath = require('child_process').execSync(
+      'find /opt/pw-browsers -type f -name "headless_shell" -o -type f -name "chrome" 2>/dev/null | head -1',
+      { encoding: 'utf8' }
+    ).trim();
+  } catch { chromiumPath = ''; }
+  if (!chromiumPath) { t.skip('No system Chromium found'); return; }
+
+  const { chromium } = require('playwright-core');
+  const browser = await chromium.launch({ executablePath: chromiumPath });
+  try {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto('http://localhost:' + PORT_UNDER_TEST + '/watch/1');
+    await page.waitForTimeout(500);
+
+    const before = await page.locator('.cat-scores[data-cat="mixed_doubles"]').innerText();
+
+    const agent = request.agent(app);
+    await agent.post('/login').type('form').send({
+      email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+    });
+    await agent.post('/fixture/1/results').type('form').send({
+      result_1_1_mixed_doubles: '1700', result_2_1_mixed_doubles: '1650',
+    });
+
+    await page.waitForTimeout(4000); // longer than the 3s poll interval — no reload
+    const after = await page.locator('.cat-scores[data-cat="mixed_doubles"]').innerText();
+
+    assert.strictEqual(before, '', 'Should show no score before the result is submitted');
+    assert.notStrictEqual(after, '', 'Should show a live score after the result is submitted, without reloading');
+    assert.match(after, /\d+\s*–\s*\d+/, `Expected a "points – points" score line, got "${after}"`);
+  } finally {
+    await browser.close();
+  }
+});

@@ -163,7 +163,7 @@ app.get('/signup/athlete', (req, res) => {
 });
 
 app.post('/signup/athlete', authLimiter, (req, res) => {
-  const { first_name, last_name, email, password, gender, dob, region_id, team_choice, team_id } = req.body;
+  const { first_name, last_name, email, password, gender, dob, phone, region_id, team_choice, team_id } = req.body;
   const regions = db.prepare("SELECT * FROM regions WHERE level='region' AND status='active'").all();
 
   if (!isReasonableLength(first_name, 80) || !isReasonableLength(last_name, 80)) {
@@ -188,8 +188,8 @@ app.post('/signup/athlete', authLimiter, (req, res) => {
   }
 
   const hash = bcrypt.hashSync(password, 10);
-  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,gender,dob) VALUES (?,?,?,?,?,?,?)`)
-    .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender, dob || null).lastInsertRowid;
+  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,gender,dob,phone) VALUES (?,?,?,?,?,?,?,?)`)
+    .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender, dob || null, (phone || '').trim() || null).lastInsertRowid;
 
   const wantsTeam = team_choice === 'assign' ? 1 : 0;
   const chosenTeamId = team_choice === 'pick' && team_id ? team_id : null;
@@ -213,7 +213,7 @@ app.get('/signup/gym', (req, res) => {
 });
 
 app.post('/signup/gym', authLimiter, (req, res) => {
-  const { gym_name, admin_first_name, admin_last_name, email, password, region_id, address, team_names } = req.body;
+  const { gym_name, admin_first_name, admin_last_name, email, password, phone, region_id, address, team_names } = req.body;
   const regions = db.prepare("SELECT * FROM regions WHERE level='region'").all();
 
   if (!isReasonableLength(gym_name, 120)) {
@@ -235,8 +235,8 @@ app.post('/signup/gym', authLimiter, (req, res) => {
   }
 
   const hash = bcrypt.hashSync(password, 10);
-  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name) VALUES (?,?,?,?,?)`)
-    .run(email.trim().toLowerCase(), hash, 'gym_admin', (admin_first_name || gym_name).trim().slice(0,80), (admin_last_name || '').trim().slice(0,80)).lastInsertRowid;
+  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,phone) VALUES (?,?,?,?,?,?)`)
+    .run(email.trim().toLowerCase(), hash, 'gym_admin', (admin_first_name || gym_name).trim().slice(0,80), (admin_last_name || '').trim().slice(0,80), (phone || '').trim() || null).lastInsertRowid;
 
   const gymId = db.prepare(`INSERT INTO gyms (name, region_id, admin_user_id, address) VALUES (?,?,?,?)`)
     .run(gym_name.trim().slice(0,120), region_id, uid, address ? address.trim().slice(0,200) : null).lastInsertRowid;
@@ -258,7 +258,7 @@ app.get('/signup/league', (req, res) => {
 });
 
 app.post('/signup/league', authLimiter, (req, res) => {
-  const { first_name, last_name, email, password, proposed_region, pitch } = req.body;
+  const { first_name, last_name, email, password, phone, proposed_region, pitch } = req.body;
   if (!isReasonableLength(first_name, 80) || !isReasonableLength(last_name, 80)) {
     return res.render('signup-league', { title: 'Apply to Run a Region', error: 'Please enter a valid first and last name.', success: false });
   }
@@ -277,8 +277,8 @@ app.post('/signup/league', authLimiter, (req, res) => {
   }
   const hash = bcrypt.hashSync(password, 10);
   const safePitch = (pitch || '').trim().slice(0, 2000);
-  db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,bio,approved) VALUES (?,?,?,?,?,?,0)`)
-    .run(email.trim().toLowerCase(), hash, 'league_operator', first_name.trim().slice(0,80), last_name.trim().slice(0,80), `Proposed region: ${proposed_region.trim().slice(0,120)}\n\n${safePitch}`);
+  db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,phone,bio,approved) VALUES (?,?,?,?,?,?,?,0)`)
+    .run(email.trim().toLowerCase(), hash, 'league_operator', first_name.trim().slice(0,80), last_name.trim().slice(0,80), (phone || '').trim() || null, `Proposed region: ${proposed_region.trim().slice(0,120)}\n\n${safePitch}`);
   res.render('signup-league', { title: 'Apply to Run a Region', error: null, success: true });
 });
 
@@ -324,6 +324,19 @@ app.get('/account', requireLogin, (req, res) => {
   if (req.session.user.role === 'athlete') return res.redirect('/profile');
   const user = db.prepare("SELECT * FROM users WHERE id=?").get(req.session.user.id);
   res.render('account', { title: 'My Account', user, query: req.query });
+});
+
+app.post('/account/update-details', requireLogin, (req, res) => {
+  const { first_name, last_name, phone } = req.body;
+  const backTo = req.session.user.role === 'athlete' ? '/profile' : '/account';
+  if (!isReasonableLength(first_name, 80) || !isOptionalReasonableLength(last_name, 80)) {
+    return res.redirect(backTo + '?detailsError=name');
+  }
+  db.prepare("UPDATE users SET first_name=?, last_name=?, phone=? WHERE id=?")
+    .run(first_name.trim(), (last_name || '').trim(), (phone || '').trim() || null, req.session.user.id);
+  req.session.user.first_name = first_name.trim();
+  req.session.user.last_name = (last_name || '').trim();
+  res.redirect(backTo + '?detailsSaved=1');
 });
 
 app.post('/account/change-password', requireLogin, (req, res) => {
@@ -392,7 +405,7 @@ app.get('/gym/team/:id', requireLogin, requireRole('gym_admin'), (req, res) => {
   const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
   if (!team) return res.status(404).render('error', { title: 'Not Found', message: 'Team not found.' });
   const roster = db.prepare(`
-    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, a.category
+    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, u.phone, a.category
     FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=?`).all(team.id);
   res.render('gym-team-detail', { title: team.name, team, roster, gym, resetPasswordFor: null, newPassword: null });
 });
@@ -411,7 +424,7 @@ app.post('/gym/team/:id/update-member', requireLogin, requireRole('gym_admin'), 
   const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
   if (!team) return res.status(404).render('error', { title: 'Not Found', message: 'Team not found.' });
 
-  const { athlete_id, first_name, last_name, email, gender, category } = req.body;
+  const { athlete_id, first_name, last_name, email, phone, gender, category } = req.body;
   const validCategories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles', ''];
   const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND team_id=?").get(athlete_id, team.id);
   if (!athlete) return res.redirect('/gym/team/' + req.params.id + '?error=notfound');
@@ -433,8 +446,8 @@ app.post('/gym/team/:id/update-member', requireLogin, requireRole('gym_admin'), 
     return res.redirect('/gym/team/' + req.params.id + '?error=category');
   }
 
-  db.prepare("UPDATE users SET first_name=?, last_name=?, email=?, gender=? WHERE id=?")
-    .run(first_name.trim(), last_name.trim(), email.trim().toLowerCase(), gender, athlete.user_id);
+  db.prepare("UPDATE users SET first_name=?, last_name=?, email=?, gender=?, phone=? WHERE id=?")
+    .run(first_name.trim(), last_name.trim(), email.trim().toLowerCase(), gender, (phone || '').trim() || null, athlete.user_id);
   db.prepare("UPDATE athletes SET category=? WHERE id=?").run(category || null, athlete_id);
 
   res.redirect('/gym/team/' + req.params.id + '?saved=1');
@@ -449,7 +462,7 @@ app.post('/gym/team/:id/add-member', requireLogin, requireRole('gym_admin'), (re
   const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(req.params.id, gym.id);
   if (!team) return res.status(404).render('error', { title: 'Not Found', message: 'Team not found.' });
 
-  const { first_name, last_name, email, gender, category } = req.body;
+  const { first_name, last_name, email, phone, gender, category } = req.body;
   const validCategories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles', ''];
 
   if (!isReasonableLength(first_name, 80) || !isOptionalReasonableLength(last_name, 80)) {
@@ -470,8 +483,8 @@ app.post('/gym/team/:id/add-member', requireLogin, requireRole('gym_admin'), (re
 
   const DEFAULT_PASSWORD = 'GLGWelcome2026!';
   const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
-  const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,gender) VALUES (?,?,?,?,?,?)")
-    .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender).lastInsertRowid;
+  const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,gender,phone) VALUES (?,?,?,?,?,?,?)")
+    .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender, (phone || '').trim() || null).lastInsertRowid;
   db.prepare("INSERT INTO athletes (user_id, region_id, team_id, wants_team, category) VALUES (?,?,?,0,?)")
     .run(uid, team.region_id, team.id, category || null);
 
@@ -503,7 +516,7 @@ app.post('/gym/team/:id/reset-password', requireLogin, requireRole('gym_admin'),
   // Re-render directly (not a redirect) so the new password can be shown once,
   // in the response — never put a raw password in a URL/query string.
   const roster = db.prepare(`
-    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, a.category
+    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, u.phone, a.category
     FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=?`).all(team.id);
   res.render('gym-team-detail', {
     title: team.name, team, roster, gym,
@@ -597,7 +610,7 @@ app.get('/fixture/:id/results', requireLogin, (req, res) => {
   for (const r of g4Results) g4Map[`${r.team_id}_${r.category}`] = r;
 
   const judgeAssignments = db.prepare(`
-    SELECT ja.id, ja.gate_id, g.number as gate_number, g.name as gate_name, u.email as judge_email, u.first_name, u.last_name
+    SELECT ja.id, ja.gate_id, g.number as gate_number, g.name as gate_name, u.email as judge_email, u.first_name, u.last_name, u.phone as judge_phone
     FROM judge_assignments ja JOIN gates g ON g.id=ja.gate_id JOIN users u ON u.id=ja.user_id
     WHERE ja.fixture_id=? ORDER BY g.number
   `).all(fixture.id);
@@ -685,12 +698,33 @@ app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
   if (!fixture || !canManageFixture(req.session.user, fixture)) {
     return res.status(403).render('error', { title: 'Access Denied', message: "You can only assign judges for your own gym's fixtures." });
   }
-  const { judge_email, gate_id } = req.body;
-  const judge = db.prepare("SELECT * FROM users WHERE email=? AND role='judge'").get((judge_email || '').trim().toLowerCase());
-  if (judge && gate_id) {
-    db.prepare("INSERT OR IGNORE INTO judge_assignments (user_id, fixture_id, gate_id) VALUES (?,?,?)")
-      .run(judge.id, fixture.id, gate_id);
+  const { judge_email, judge_first_name, judge_last_name, judge_phone, gate_id } = req.body;
+  const email = (judge_email || '').trim().toLowerCase();
+
+  if (!isValidEmail(email) || !gate_id) {
+    return res.redirect(`/fixture/${fixture.id}/results?judgeError=email`);
   }
+
+  let judge = db.prepare("SELECT * FROM users WHERE email=?").get(email);
+  if (judge && judge.role !== 'judge') {
+    // that email belongs to someone else's account (athlete, gym admin, etc.) — don't silently repurpose it
+    return res.redirect(`/fixture/${fixture.id}/results?judgeError=notjudge`);
+  }
+
+  if (!judge) {
+    // no account with this email yet — create one, using the name/phone provided
+    if (!isReasonableLength(judge_first_name, 80)) {
+      return res.redirect(`/fixture/${fixture.id}/results?judgeError=name`);
+    }
+    const DEFAULT_PASSWORD = 'GLGWelcome2026!';
+    const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
+    const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,phone) VALUES (?,?,?,?,?,?)")
+      .run(email, hash, 'judge', judge_first_name.trim(), (judge_last_name || '').trim(), (judge_phone || '').trim() || null).lastInsertRowid;
+    judge = db.prepare("SELECT * FROM users WHERE id=?").get(uid);
+  }
+
+  db.prepare("INSERT OR IGNORE INTO judge_assignments (user_id, fixture_id, gate_id) VALUES (?,?,?)")
+    .run(judge.id, fixture.id, gate_id);
   res.redirect(`/fixture/${fixture.id}/results?judgeAssigned=1`);
 });
 

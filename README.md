@@ -73,14 +73,28 @@ no automatic email sent yet — see the known gaps below).
 
 **Judges** are a separate account type that can only enter scores for the specific gate
 they're assigned to:
-1. A gym admin (or GLG Admin) goes to a fixture's Results page and assigns a judge's email
-   to a gate.
+1. A gym admin (or GLG Admin) goes to a fixture's Results page → "Judge Assignments" and
+   enters a name, phone, and email, then picks a gate. **If that email doesn't already have a
+   judge account, one is created automatically** (default password `GLGWelcome2026!`) and
+   assigned in the same step — no separate account-creation step needed. If the email already
+   belongs to a judge, they're just added to this gate too, with no duplicate account.
 2. The judge logs in at the normal `/login` page and lands on their own dashboard listing
    only their assigned gate(s).
 3. Opening a gate shows just that gate's exercises — the judge enters scores as each
    exercise finishes rather than waiting to fill in one giant form at the end.
 4. A judge who isn't assigned to a gate gets a clear "Access Denied," both for viewing and
-   for submitting — verified with automated tests.
+   for submitting — verified with automated tests. Assigning an email that already belongs to
+   a non-judge account (an athlete, gym admin, etc.) is rejected too, rather than silently
+   repurposing it.
+
+**Full guides for this are in the delivered package:** `GLG-Judge-Setup-Guide.docx` (for you —
+creating and assigning judges) and `GLG-Judge-Quick-Guide.docx` (a simple one-pager to hand
+straight to a judge — how to log in and enter scores, nothing else).
+
+**Scores appear live everywhere, without a page reload** — verified directly with a real
+browser: opened the public watch page, submitted a result from a completely separate request
+(simulating a judge elsewhere), and confirmed the already-open page picked up the new score
+within its poll window, no refresh needed.
 
 **The clock is server-synced**, not local to one browser. Starting, pausing, or resetting the
 timer from the Cast Display updates the server; every viewer — the controller and anyone on
@@ -97,6 +111,12 @@ Both pages have a **Fullscreen** button (top right) using the browser's real Ful
 hides the browser's address bar and tabs for a cleaner display on a TV or projector. Browsers
 require a real click to trigger this (a security rule), so it can't happen automatically on
 page load.
+
+## Phone Numbers
+
+Every account type now has an optional phone number — collected at sign-up (athlete, gym,
+league operator), editable by a gym admin managing a member, and editable by anyone from their
+own Account page. Not required anywhere, but there if you want a way to reach people directly.
 
 ---
 
