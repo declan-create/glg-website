@@ -1,6 +1,7 @@
 const Database = require('better-sqlite3');
 const bcrypt = require('bcryptjs');
 const path = require('path');
+const fs = require('fs');
 
 // ============================================================================
 // EVENT CONFIG — edit THIS block for any future change to teams/event format.
@@ -29,6 +30,9 @@ const EVENT_CONFIG = {
 // ============================================================================
 
 const dbPath = process.env.GLG_DB_PATH || path.join(__dirname, 'glg.db');
+// Ensure the folder for the DB exists — matters when GLG_DB_PATH points at a
+// persistent volume (e.g. /data/glg.db on Railway) so data survives redeploys.
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
 const db = new Database(dbPath);
 db.pragma('foreign_keys = ON');
 
