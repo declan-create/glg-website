@@ -549,11 +549,13 @@ function canManageFixture(user, fixture) {
   return teamIds.includes(fixture.team_a_id) || teamIds.includes(fixture.team_b_id);
 }
 
-// A judge may only enter scores for the specific (fixture, gate) pairs
-// they've been assigned — this is intentionally narrower than canManageFixture.
-function judgeAssignedGates(userId, fixtureId) {
-  return db.prepare("SELECT gate_id FROM judge_assignments WHERE user_id=? AND fixture_id=?")
-    .all(userId, fixtureId).map(r => r.gate_id);
+// A judge may only enter scores for the specific (fixture, category) pairs
+// they've been assigned — a judge follows their participant group through
+// every exercise, so scope is per category, not per gate. This is
+// intentionally narrower than canManageFixture.
+function judgeAssignedCategories(userId, fixtureId) {
+  return db.prepare("SELECT category FROM judge_assignments WHERE user_id=? AND fixture_id=?")
+    .all(userId, fixtureId).map(r => r.category);
 }
 
 // ---- server-synced clock so the controller's Cast Display and the public
@@ -610,9 +612,9 @@ app.get('/fixture/:id/results', requireLogin, (req, res) => {
   for (const r of g4Results) g4Map[`${r.team_id}_${r.category}`] = r;
 
   const judgeAssignments = db.prepare(`
-    SELECT ja.id, ja.gate_id, g.number as gate_number, g.name as gate_name, u.email as judge_email, u.first_name, u.last_name, u.phone as judge_phone
-    FROM judge_assignments ja JOIN gates g ON g.id=ja.gate_id JOIN users u ON u.id=ja.user_id
-    WHERE ja.fixture_id=? ORDER BY g.number
+    SELECT ja.id, ja.category, u.email as judge_email, u.first_name, u.last_name, u.phone as judge_phone
+    FROM judge_assignments ja JOIN users u ON u.id=ja.user_id
+    WHERE ja.fixture_id=? ORDER BY ja.category
   `).all(fixture.id);
 
   res.render('fixture-results', {
@@ -622,9 +624,9 @@ app.get('/fixture/:id/results', requireLogin, (req, res) => {
 });
 
 // Shared by both the full-fixture results form (gym admin / GLG admin) and the
-// gate-scoped judge entry form — same upsert + recompute logic either way,
-// just restricted to a subset of exercise IDs when a judge is scoped to one gate.
-function applyResultsFromBody(fixture, body, allowedExerciseIds /* null = no restriction */) {
+// category-scoped judge entry form — same upsert + recompute logic either way,
+// just restricted to the judge's assigned categories when scoped.
+function applyResultsFromBody(fixture, body, allowedExerciseIds /* null = no restriction */, allowedCategories /* null = no restriction */) {
   const categories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles'];
   const exercises = db.prepare("SELECT e.*, g.is_sprint_finish FROM exercises e JOIN gates g ON g.id=e.gate_id").all();
 
@@ -644,6 +646,7 @@ function applyResultsFromBody(fixture, body, allowedExerciseIds /* null = no res
     if (allowedExerciseIds && !allowedExerciseIds.includes(ex.id)) continue;
     for (const teamId of [fixture.team_a_id, fixture.team_b_id]) {
       for (const category of categories) {
+        if (allowedCategories && !allowedCategories.includes(category)) continue;
         const key = `result_${teamId}_${ex.id}_${category}`;
         if (body[key] !== undefined && body[key] !== '') {
           upsertCategoryResult(fixture.id, ex.id, teamId, category, parseFloat(body[key]));
@@ -658,6 +661,7 @@ function applyResultsFromBody(fixture, body, allowedExerciseIds /* null = no res
   if (gate4Allowed) {
     for (const teamId of [fixture.team_a_id, fixture.team_b_id]) {
       for (const category of categories) {
+        if (allowedCategories && !allowedCategories.includes(category)) continue;
         const completedKey = `g4_${teamId}_${category}_completed`;
         const timeKey = `g4_${teamId}_${category}_time`;
         if (body[completedKey] !== undefined) {
@@ -692,16 +696,19 @@ app.post('/fixture/:id/results', requireLogin, (req, res) => {
   res.redirect(`/fixture/${fixtureId}/results?saved=1`);
 });
 
-// ---- Judge assignment (gym admin / GLG admin assigns a judge to a gate for a fixture) ----
+// ---- Judge assignment (gym admin / GLG admin assigns a judge to a category for a fixture) ----
 app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
   const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
   if (!fixture || !canManageFixture(req.session.user, fixture)) {
     return res.status(403).render('error', { title: 'Access Denied', message: "You can only assign judges for your own gym's fixtures." });
   }
-  const { judge_email, judge_first_name, judge_last_name, judge_phone, gate_id } = req.body;
+  const { judge_email, judge_first_name, judge_last_name, judge_phone, category } = req.body;
+  if (!Object.keys(CATEGORY_LABEL).includes(category)) {
+    return res.redirect(`/fixture/${fixture.id}/results?judgeError=category`);
+  }
   const email = (judge_email || '').trim().toLowerCase();
 
-  if (!isValidEmail(email) || !gate_id) {
+  if (!isValidEmail(email)) {
     return res.redirect(`/fixture/${fixture.id}/results?judgeError=email`);
   }
 
@@ -723,8 +730,8 @@ app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
     judge = db.prepare("SELECT * FROM users WHERE id=?").get(uid);
   }
 
-  db.prepare("INSERT OR IGNORE INTO judge_assignments (user_id, fixture_id, gate_id) VALUES (?,?,?)")
-    .run(judge.id, fixture.id, gate_id);
+  db.prepare("INSERT OR IGNORE INTO judge_assignments (user_id, fixture_id, category) VALUES (?,?,?)")
+    .run(judge.id, fixture.id, category);
   res.redirect(`/fixture/${fixture.id}/results?judgeAssigned=1`);
 });
 
@@ -737,67 +744,175 @@ app.post('/fixture/:id/unassign-judge/:assignmentId', requireLogin, (req, res) =
   res.redirect(`/fixture/${fixture.id}/results`);
 });
 
-// ---- Judge dashboard & gate-scoped scoring ----
+// ---- Judge dashboard & category-scoped scoring ----
 app.get('/judge', requireLogin, requireRole('judge'), (req, res) => {
   const assignments = db.prepare(`
-    SELECT ja.id as assignment_id, f.id as fixture_id, f.week, f.match_date,
-           ta.name as team_a_name, tb.name as team_b_name, g.id as gate_id, g.number as gate_number, g.name as gate_name
+    SELECT ja.id as assignment_id, ja.category, f.id as fixture_id, f.week, f.match_date,
+           ta.name as team_a_name, tb.name as team_b_name
     FROM judge_assignments ja
     JOIN fixtures f ON f.id = ja.fixture_id
     JOIN teams ta ON ta.id = f.team_a_id
     JOIN teams tb ON tb.id = f.team_b_id
-    JOIN gates g ON g.id = ja.gate_id
     WHERE ja.user_id = ?
-    ORDER BY f.week, g.number
+    ORDER BY f.week, ja.category
   `).all(req.session.user.id);
-  res.render('judge-dashboard', { title: 'Judge Dashboard', assignments });
+  res.render('judge-dashboard', { title: 'Judge Dashboard', assignments, categoryLabel: CATEGORY_LABEL });
 });
 
-app.get('/judge/fixture/:fixtureId/gate/:gateId', requireLogin, requireRole('judge'), (req, res) => {
-  const assigned = judgeAssignedGates(req.session.user.id, req.params.fixtureId);
-  if (!assigned.includes(parseInt(req.params.gateId))) {
-    return res.status(403).render('error', { title: 'Access Denied', message: "You're not assigned to judge this gate." });
+app.get('/judge/fixture/:fixtureId/category/:category', requireLogin, requireRole('judge'), (req, res) => {
+  const assigned = judgeAssignedCategories(req.session.user.id, req.params.fixtureId);
+  if (!assigned.includes(req.params.category)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You're not assigned to judge this category." });
   }
   const fixture = db.prepare(`
     SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
     JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.fixtureId);
-  const gate = db.prepare("SELECT * FROM gates WHERE id=?").get(req.params.gateId);
-  const exercises = db.prepare("SELECT * FROM exercises WHERE gate_id=? ORDER BY sort_order").all(gate.id);
+  const category = req.params.category;
+
+  const gates = db.prepare("SELECT * FROM gates ORDER BY number").all();
+  const exercises = db.prepare(`
+    SELECT e.*, g.number as gate_number, g.name as gate_name, g.is_sprint_finish
+    FROM exercises e JOIN gates g ON g.id=e.gate_id ORDER BY g.number, e.sort_order`).all();
 
   const categoryLabel = CATEGORY_LABEL;
-  const categories = Object.keys(categoryLabel);
   const namesFor = (teamId) => {
-    const rows = db.prepare("SELECT category, first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category IS NOT NULL").all(teamId);
-    const grouped = {};
-    for (const r of rows) (grouped[r.category] ||= []).push(`${r.first_name} ${r.last_name}`);
-    return grouped;
+    const rows = db.prepare("SELECT first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category=?").all(teamId, category);
+    return rows.map(r => `${r.first_name} ${r.last_name}`);
   };
   const namesA = namesFor(fixture.team_a_id), namesB = namesFor(fixture.team_b_id);
 
-  const catResults = db.prepare("SELECT * FROM category_results WHERE fixture_id=? AND exercise_id IN (" + exercises.map(()=>'?').join(',') + ")").all(fixture.id, ...exercises.map(e=>e.id));
+  const catResults = db.prepare("SELECT * FROM category_results WHERE fixture_id=? AND category=?").all(fixture.id, category);
   const resultMap = {};
-  for (const r of catResults) resultMap[`${r.team_id}_${r.exercise_id}_${r.category}`] = r;
+  for (const r of catResults) resultMap[`${r.team_id}_${r.exercise_id}`] = r;
 
   const g4Map = {};
-  if (gate.is_sprint_finish) {
-    const g4Results = db.prepare("SELECT * FROM category_gate4_results WHERE fixture_id=?").all(fixture.id);
-    for (const r of g4Results) g4Map[`${r.team_id}_${r.category}`] = r;
-  }
+  const g4Results = db.prepare("SELECT * FROM category_gate4_results WHERE fixture_id=? AND category=?").all(fixture.id, category);
+  for (const r of g4Results) g4Map[`${r.team_id}`] = r;
 
-  res.render('judge-gate-results', { title: `Judge — Gate ${gate.number}`, fixture, gate, exercises, categoryLabel, categories, namesA, namesB, resultMap, g4Map });
+  res.render('judge-category-results', { title: `Judge — ${categoryLabel[category]}`, fixture, category, gates, exercises, categoryLabel, namesA, namesB, resultMap, g4Map });
 });
 
-app.post('/judge/fixture/:fixtureId/gate/:gateId', requireLogin, requireRole('judge'), (req, res) => {
-  const assigned = judgeAssignedGates(req.session.user.id, req.params.fixtureId);
-  if (!assigned.includes(parseInt(req.params.gateId))) {
-    return res.status(403).render('error', { title: 'Access Denied', message: "You're not assigned to judge this gate." });
+app.post('/judge/fixture/:fixtureId/category/:category', requireLogin, requireRole('judge'), (req, res) => {
+  const assigned = judgeAssignedCategories(req.session.user.id, req.params.fixtureId);
+  if (!assigned.includes(req.params.category)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You're not assigned to judge this category." });
   }
   const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.fixtureId);
-  const exerciseIds = db.prepare("SELECT id FROM exercises WHERE gate_id=?").all(req.params.gateId).map(e => e.id);
 
-  applyResultsFromBody(fixture, req.body, exerciseIds);
+  // No exercise restriction — the judge covers all 12 exercises,
+  // but only for their assigned category.
+  applyResultsFromBody(fixture, req.body, null, [req.params.category]);
 
-  res.redirect(`/judge/fixture/${req.params.fixtureId}/gate/${req.params.gateId}?saved=1`);
+  res.redirect(`/judge/fixture/${req.params.fixtureId}/category/${req.params.category}?saved=1`);
+});
+
+// ---- LIVE JUDGE COUNTER (phone screen) ----
+// Real-time rep counting: big tap buttons for rep exercises, quick totals for
+// machines, and a synced Gate 4 finish stamp. Follows the master event clock
+// so the judge's phone always shows the exercise their category is on.
+
+function judgeLiveGuard(req, res) {
+  const assigned = judgeAssignedCategories(req.session.user.id, req.params.fixtureId);
+  if (!assigned.includes(req.params.category)) return null;
+  return db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.fixtureId);
+}
+
+app.get('/judge/fixture/:fixtureId/category/:category/live', requireLogin, requireRole('judge'), (req, res) => {
+  const fixture = judgeLiveGuard(req, res);
+  if (!fixture) return res.status(403).render('error', { title: 'Access Denied', message: "You're not assigned to judge this category." });
+  const category = req.params.category;
+
+  const exercises = db.prepare(`
+    SELECT e.*, g.number as gate_number, g.name as gate_name, g.is_sprint_finish
+    FROM exercises e JOIN gates g ON g.id=e.gate_id ORDER BY g.number, e.sort_order`).all();
+
+  // Attach this category's benchmark to each exercise so the phone can show
+  // target + progress without knowing the doubles-summing rule.
+  for (const ex of exercises) ex.category_benchmark = scoring.benchmarkForCategory(ex, category);
+
+  const namesFor = (teamId) => db.prepare(
+    "SELECT first_name, last_name FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=? AND a.category=?"
+  ).all(teamId, category).map(r => `${r.first_name} ${r.last_name}`);
+
+  const catResults = db.prepare("SELECT * FROM category_results WHERE fixture_id=? AND category=?").all(fixture.id, category);
+  const resultMap = {};
+  for (const r of catResults) resultMap[`${r.team_id}_${r.exercise_id}`] = { raw_value: r.raw_value, points: r.points };
+  const g4Map = {};
+  for (const r of db.prepare("SELECT * FROM category_gate4_results WHERE fixture_id=? AND category=?").all(fixture.id, category)) {
+    g4Map[r.team_id] = { completed: r.completed, total_time_sec: r.total_time_sec, points: r.points };
+  }
+
+  const CATEGORY_ORDER = ['mens_singles','womens_singles','mens_doubles','womens_doubles','mixed_doubles'];
+
+  res.render('judge-live', {
+    title: `Live — ${CATEGORY_LABEL[category]}`, layout: false,
+    fixture, category, categoryLabel: CATEGORY_LABEL,
+    catIndex: CATEGORY_ORDER.indexOf(category),
+    exercises, resultMap, g4Map,
+    namesA: namesFor(fixture.team_a_id), namesB: namesFor(fixture.team_b_id),
+  });
+});
+
+// Save one exercise result from the live counter (tap counters + totals).
+app.post('/api/judge/fixture/:fixtureId/category/:category/result', requireLogin, requireRole('judge'), (req, res) => {
+  const fixture = judgeLiveGuard(req, res);
+  if (!fixture) return res.status(403).json({ error: 'not assigned' });
+
+  const exercise_id = parseInt(req.body.exercise_id);
+  const team_id = parseInt(req.body.team_id);
+  const raw_value = parseFloat(req.body.raw_value);
+  if (![fixture.team_a_id, fixture.team_b_id].includes(team_id)) return res.status(400).json({ error: 'bad team' });
+  const ex = db.prepare("SELECT e.*, g.is_sprint_finish FROM exercises e JOIN gates g ON g.id=e.gate_id WHERE e.id=?").get(exercise_id);
+  if (!ex || ex.is_sprint_finish) return res.status(400).json({ error: 'bad exercise' });
+  if (!isFinite(raw_value) || raw_value < 0) return res.status(400).json({ error: 'bad value' });
+
+  const category = req.params.category;
+  const existing = db.prepare("SELECT id FROM category_results WHERE fixture_id=? AND exercise_id=? AND team_id=? AND category=?")
+    .get(fixture.id, exercise_id, team_id, category);
+  if (existing) db.prepare("UPDATE category_results SET raw_value=? WHERE id=?").run(raw_value, existing.id);
+  else db.prepare("INSERT INTO category_results (fixture_id, exercise_id, team_id, category, raw_value) VALUES (?,?,?,?,?)")
+    .run(fixture.id, exercise_id, team_id, category, raw_value);
+
+  scoring.recomputeFixtureScores(fixture.id);
+
+  // hand back both teams' fresh points for this exercise so the phone can show
+  // benchmark-hit / station-won state live
+  const out = {};
+  for (const tid of [fixture.team_a_id, fixture.team_b_id]) {
+    const r = db.prepare("SELECT raw_value, points, benchmark_met, beat_opponent FROM category_results WHERE fixture_id=? AND exercise_id=? AND team_id=? AND category=?")
+      .get(fixture.id, exercise_id, tid, category);
+    if (r) out[tid] = r;
+  }
+  res.json({ ok: true, results: out });
+});
+
+// Stamp / un-stamp a Gate 4 finish from the live counter.
+app.post('/api/judge/fixture/:fixtureId/category/:category/gate4', requireLogin, requireRole('judge'), (req, res) => {
+  const fixture = judgeLiveGuard(req, res);
+  if (!fixture) return res.status(403).json({ error: 'not assigned' });
+
+  const team_id = parseInt(req.body.team_id);
+  if (![fixture.team_a_id, fixture.team_b_id].includes(team_id)) return res.status(400).json({ error: 'bad team' });
+  const completed = req.body.completed ? 1 : 0;
+  const time = (req.body.total_time_sec !== undefined && req.body.total_time_sec !== null && req.body.total_time_sec !== '')
+    ? parseFloat(req.body.total_time_sec) : null;
+
+  const category = req.params.category;
+  const existing = db.prepare("SELECT id FROM category_gate4_results WHERE fixture_id=? AND team_id=? AND category=?").get(fixture.id, team_id, category);
+  if (existing) db.prepare("UPDATE category_gate4_results SET completed=?, total_time_sec=? WHERE id=?").run(completed, time, existing.id);
+  else db.prepare("INSERT INTO category_gate4_results (fixture_id, team_id, category, completed, total_time_sec) VALUES (?,?,?,?,?)")
+    .run(fixture.id, team_id, category, completed, time);
+
+  scoring.recomputeFixtureScores(fixture.id);
+
+  const out = {};
+  for (const tid of [fixture.team_a_id, fixture.team_b_id]) {
+    const r = db.prepare("SELECT completed, total_time_sec, points FROM category_gate4_results WHERE fixture_id=? AND team_id=? AND category=?").get(fixture.id, tid, category);
+    if (r) out[tid] = r;
+  }
+  res.json({ ok: true, gate4: out });
 });
 
 // ============ CAST / TV DISPLAY (public, no login needed - gyms just load the URL on a screen) ============

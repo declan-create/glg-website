@@ -1,0 +1,318 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title><%= title %> — Gym League Global</title>
+<style>
+  :root { --forest:#001814; --lime:#A3E635; --off:#F7F7F2; --slate:#5b6b66; --danger:#d64545; }
+  * { box-sizing:border-box; margin:0; padding:0; -webkit-tap-highlight-color:transparent; }
+  html,body { height:100%; }
+  body { font-family:-apple-system,'Segoe UI',Roboto,sans-serif; background:var(--forest); color:var(--off); display:flex; flex-direction:column; overflow:hidden; touch-action:manipulation; }
+
+  header { padding:.55rem .8rem; display:flex; align-items:center; justify-content:space-between; gap:.5rem; border-bottom:1px solid rgba(163,230,53,.25); flex:0 0 auto; }
+  .cat { font-weight:800; font-size:.95rem; color:var(--lime); text-transform:uppercase; letter-spacing:.04em; }
+  .stageclock { font-variant-numeric:tabular-nums; font-weight:800; font-size:1.15rem; }
+  .savedot { font-size:.62rem; padding:.15rem .45rem; border-radius:99px; background:rgba(163,230,53,.15); color:var(--lime); }
+  .savedot.dirty { background:rgba(214,69,69,.2); color:#ff9b9b; }
+
+  .stagebar { padding:.4rem .8rem; display:flex; align-items:center; gap:.5rem; flex:0 0 auto; border-bottom:1px solid rgba(255,255,255,.08); }
+  .stagebar button { background:rgba(255,255,255,.08); color:var(--off); border:0; border-radius:.5rem; font-size:1.05rem; padding:.35rem .8rem; }
+  .stageinfo { flex:1; min-width:0; text-align:center; }
+  .stageinfo .nm { font-weight:800; font-size:.95rem; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .stageinfo .bm { font-size:.68rem; color:#b7c6c1; }
+  .autochip { display:none; background:var(--lime); color:var(--forest); border:0; border-radius:99px; font-size:.65rem; font-weight:800; padding:.3rem .6rem; }
+  .autochip.show { display:inline-block; }
+
+  main { flex:1 1 auto; display:flex; flex-direction:column; gap:.5rem; padding:.5rem; min-height:0; }
+
+  /* tap counter zones */
+  .zone { flex:1; border-radius:1rem; border:2px solid rgba(255,255,255,.15); display:flex; flex-direction:column; align-items:center; justify-content:center; position:relative; user-select:none; background:rgba(255,255,255,.04); }
+  .zone.hit { border-color:var(--lime); background:rgba(163,230,53,.12); }
+  .zone .team { font-weight:800; font-size:1rem; text-transform:uppercase; letter-spacing:.05em; }
+  .zone .who { font-size:.7rem; color:#b7c6c1; margin-top:.1rem; }
+  .zone .count { font-size:4.2rem; font-weight:800; line-height:1; font-variant-numeric:tabular-nums; margin:.3rem 0 .1rem; }
+  .zone .target { font-size:.75rem; color:#b7c6c1; }
+  .zone.hit .target { color:var(--lime); font-weight:700; }
+  .zone .minus { position:absolute; right:.7rem; bottom:.7rem; width:2.7rem; height:2.7rem; border-radius:99px; border:1px solid rgba(255,255,255,.3); background:rgba(0,0,0,.25); color:var(--off); font-size:1.3rem; }
+  .zone .taphint { position:absolute; left:.8rem; bottom:.8rem; font-size:.6rem; color:rgba(255,255,255,.35); text-transform:uppercase; letter-spacing:.08em; }
+
+  /* totals entry */
+  .entry { flex:1; border-radius:1rem; border:2px solid rgba(255,255,255,.15); background:rgba(255,255,255,.04); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.5rem; padding:.8rem; }
+  .entry.hit { border-color:var(--lime); background:rgba(163,230,53,.12); }
+  .entry input { width:9rem; font-size:2.2rem; font-weight:800; text-align:center; border-radius:.7rem; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.3); color:var(--off); padding:.3rem; }
+  .entry .savebtn { background:var(--lime); color:var(--forest); border:0; border-radius:.6rem; font-weight:800; font-size:.9rem; padding:.55rem 1.4rem; }
+
+  /* gate 4 */
+  .sprintclock { text-align:center; font-size:2.6rem; font-weight:800; font-variant-numeric:tabular-nums; flex:0 0 auto; }
+  .finzone { flex:1; border-radius:1rem; border:2px solid rgba(255,255,255,.15); background:rgba(255,255,255,.04); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.3rem; }
+  .finzone .finbtn { background:var(--lime); color:var(--forest); border:0; border-radius:.8rem; font-weight:800; font-size:1.5rem; padding:1rem 2.2rem; }
+  .finzone.done { border-color:var(--lime); background:rgba(163,230,53,.12); }
+  .finzone .stamped { font-size:2rem; font-weight:800; font-variant-numeric:tabular-nums; color:var(--lime); }
+  .finzone .undo { background:none; border:1px solid rgba(255,255,255,.3); color:#b7c6c1; border-radius:.5rem; font-size:.7rem; padding:.3rem .7rem; margin-top:.3rem; }
+
+  .waitmsg { flex:1; display:flex; align-items:center; justify-content:center; font-size:1.1rem; color:#b7c6c1; text-align:center; padding:1rem; }
+  footer { flex:0 0 auto; padding:.4rem .8rem .7rem; display:flex; justify-content:space-between; font-size:.68rem; }
+  footer a { color:#b7c6c1; text-decoration:none; }
+</style>
+</head>
+<body>
+
+<header>
+  <div class="cat"><%= categoryLabel[category] %></div>
+  <div class="stageclock" id="stageClock">--:--</div>
+  <div class="savedot" id="saveDot">Saved</div>
+</header>
+
+<div class="stagebar">
+  <button id="prevBtn">‹</button>
+  <div class="stageinfo">
+    <div class="nm" id="stageName">Loading…</div>
+    <div class="bm" id="stageBench"></div>
+  </div>
+  <button class="autochip" id="autoChip">Resume auto</button>
+  <button id="nextBtn">›</button>
+</div>
+
+<main id="mainArea"></main>
+
+<footer>
+  <a href="/judge">← My Assignments</a>
+  <a href="/judge/fixture/<%= fixture.id %>/category/<%= category %>">Full results form</a>
+</footer>
+
+<script>
+  const FIXTURE_ID = <%= fixture.id %>;
+  const CATEGORY = <%- JSON.stringify(category) %>;
+  const CAT_INDEX = <%= catIndex %>;
+  const TEAM_A = { id: <%= fixture.team_a_id %>, name: <%- JSON.stringify(fixture.team_a_name) %>, who: <%- JSON.stringify(namesA.join(' & ') || '—') %> };
+  const TEAM_B = { id: <%= fixture.team_b_id %>, name: <%- JSON.stringify(fixture.team_b_name) %>, who: <%- JSON.stringify(namesB.join(' & ') || '—') %> };
+  const EXERCISES = <%- JSON.stringify(exercises) %>;
+  const INITIAL = <%- JSON.stringify(resultMap) %>;
+  const INITIAL_G4 = <%- JSON.stringify(g4Map) %>;
+
+  const OFFSET_SEC = CAT_INDEX * 5 * 60;
+  const STAGE_SEC = 5 * 60;
+  const timed = EXERCISES.filter(e => !e.is_sprint_finish);   // 9 exercises, in event order
+  const sprintExs = EXERCISES.filter(e => e.is_sprint_finish);
+  const GATES123_SEC = timed.length * STAGE_SEC;
+  const SPRINT_IDX = timed.length; // virtual stage index for Gate 4
+
+  // local state
+  const values = {}; // exercise_id -> { teamId -> number }
+  for (const ex of timed) {
+    values[ex.id] = {};
+    for (const t of [TEAM_A, TEAM_B]) {
+      const r = INITIAL[t.id + '_' + ex.id];
+      values[ex.id][t.id] = r && r.raw_value != null ? r.raw_value : 0;
+    }
+  }
+  const g4 = {};
+  for (const t of [TEAM_A, TEAM_B]) g4[t.id] = INITIAL_G4[t.id] || { completed: 0, total_time_sec: null };
+
+  // ---- server-synced clock ----
+  let serverElapsed = 0, serverRunning = false, lastPoll = Date.now();
+  async function pollClock(){
+    try {
+      const res = await fetch(`/api/fixture/${FIXTURE_ID}/clock/full_event`);
+      const d = await res.json();
+      serverElapsed = d.elapsedSeconds; serverRunning = d.running; lastPoll = Date.now();
+    } catch(e){}
+  }
+  function masterNow(){ return serverRunning ? serverElapsed + (Date.now()-lastPoll)/1000 : serverElapsed; }
+  function catElapsed(){ return masterNow() - OFFSET_SEC; }
+  function clockStageIdx(){
+    const e = catElapsed();
+    if (e < 0) return -1;
+    if (e >= GATES123_SEC) return SPRINT_IDX;
+    return Math.floor(e / STAGE_SEC);
+  }
+
+  // ---- stage navigation: follows the clock unless the judge overrides ----
+  let follow = true, manualIdx = 0, renderedIdx = null;
+  function activeIdx(){ return follow ? Math.max(clockStageIdx(), -1) : manualIdx; }
+  document.getElementById('prevBtn').addEventListener('click', () => { manualIdx = Math.max(0, (follow ? Math.max(clockStageIdx(),0) : manualIdx) - 1); follow = false; render(true); });
+  document.getElementById('nextBtn').addEventListener('click', () => { manualIdx = Math.min(SPRINT_IDX, (follow ? Math.max(clockStageIdx(),0) : manualIdx) + 1); follow = false; render(true); });
+  document.getElementById('autoChip').addEventListener('click', () => { follow = true; render(true); });
+
+  // ---- saving (fire immediately, retry on failure, flush on page hide) ----
+  const dirty = new Set(); // 'ex:<id>:<team>' or 'g4:<team>'
+  const dot = document.getElementById('saveDot');
+  function markDirty(k){ dirty.add(k); dot.textContent = 'Saving…'; dot.classList.add('dirty'); }
+  function markClean(k){ dirty.delete(k); if (!dirty.size){ dot.textContent = 'Saved'; dot.classList.remove('dirty'); } }
+  async function saveResult(exId, teamId){
+    const k = `ex:${exId}:${teamId}`; markDirty(k);
+    try {
+      const res = await fetch(`/api/judge/fixture/${FIXTURE_ID}/category/${CATEGORY}/result`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ exercise_id: exId, team_id: teamId, raw_value: values[exId][teamId] })
+      });
+      if (res.ok) markClean(k); else dot.textContent = 'Retrying…';
+    } catch(e){ dot.textContent = 'Offline — retrying'; }
+  }
+  async function saveG4(teamId){
+    const k = `g4:${teamId}`; markDirty(k);
+    try {
+      const res = await fetch(`/api/judge/fixture/${FIXTURE_ID}/category/${CATEGORY}/gate4`, {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ team_id: teamId, completed: g4[teamId].completed, total_time_sec: g4[teamId].total_time_sec })
+      });
+      if (res.ok) markClean(k); else dot.textContent = 'Retrying…';
+    } catch(e){ dot.textContent = 'Offline — retrying'; }
+  }
+  setInterval(() => { // retry anything stuck
+    for (const k of [...dirty]) {
+      const p = k.split(':');
+      if (p[0]==='ex') saveResult(parseInt(p[1]), parseInt(p[2])); else saveG4(parseInt(p[1]));
+    }
+  }, 3000);
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState==='hidden') { for (const k of [...dirty]) { const p=k.split(':'); if (p[0]==='ex') saveResult(parseInt(p[1]), parseInt(p[2])); else saveG4(parseInt(p[1])); } } });
+
+  // ---- rendering ----
+  function fmt(sec){ sec=Math.max(0,sec); const w=Math.floor(sec); return String(Math.floor(w/60)).padStart(2,'0')+':'+String(w%60).padStart(2,'0'); }
+  const main = document.getElementById('mainArea');
+
+  function zoneHtml(t, ex){
+    const v = values[ex.id][t.id];
+    const hit = ex.category_benchmark != null && v >= ex.category_benchmark;
+    return `<div class="zone ${hit?'hit':''}" data-tap="${t.id}">
+      <div class="team">${t.name}</div>
+      <div class="who">${t.who}</div>
+      <div class="count">${v % 1 === 0 ? v : v.toFixed(1)}</div>
+      <div class="target">${ex.category_benchmark != null ? 'target ' + ex.category_benchmark + (hit ? ' ✓' : '') : ''}</div>
+      <div class="taphint">tap anywhere = +1</div>
+      <button class="minus" data-minus="${t.id}">−</button>
+    </div>`;
+  }
+  function entryHtml(t, ex){
+    const v = values[ex.id][t.id];
+    const hit = ex.category_benchmark != null && v >= ex.category_benchmark;
+    return `<div class="entry ${hit?'hit':''}">
+      <div class="team">${t.name}</div>
+      <div class="who">${t.who}</div>
+      <input type="number" inputmode="decimal" step="any" min="0" value="${v || ''}" data-entry="${t.id}" placeholder="${ex.unit}">
+      <div class="target">${ex.category_benchmark != null ? 'target ' + ex.category_benchmark + ' ' + ex.unit + (hit ? ' ✓' : '') : ''}</div>
+      <button class="savebtn" data-entrysave="${t.id}">Save</button>
+    </div>`;
+  }
+  function finHtml(t){
+    const g = g4[t.id];
+    if (g.completed) {
+      return `<div class="finzone done">
+        <div class="team">${t.name}</div><div class="who">${t.who}</div>
+        <div class="stamped">${g.total_time_sec != null ? fmt(g.total_time_sec) : '—'}</div>
+        <button class="undo" data-unfin="${t.id}">undo</button>
+      </div>`;
+    }
+    return `<div class="finzone">
+      <div class="team">${t.name}</div><div class="who">${t.who}</div>
+      <button class="finbtn" data-fin="${t.id}">FINISHED</button>
+    </div>`;
+  }
+
+  function render(force){
+    const idx = activeIdx();
+    const clockIdx = clockStageIdx();
+    document.getElementById('autoChip').classList.toggle('show', !follow && clockIdx !== idx);
+
+    // header clock: stage countdown, sprint count-up, or time-to-start
+    const e = catElapsed();
+    let clockTxt = '--:--';
+    if (e < 0) clockTxt = 'in ' + fmt(-e);
+    else if (clockIdx === SPRINT_IDX) clockTxt = fmt(e - GATES123_SEC);
+    else if (clockIdx >= 0) clockTxt = fmt(STAGE_SEC - (e - clockIdx*STAGE_SEC));
+    document.getElementById('stageClock').textContent = clockTxt;
+
+    if (!force && renderedIdx === idx) { refreshCountsOnly(idx); return; }
+    renderedIdx = idx;
+
+    const nameEl = document.getElementById('stageName');
+    const benchEl = document.getElementById('stageBench');
+
+    if (idx === -1) {
+      nameEl.textContent = 'Waiting to start';
+      benchEl.textContent = 'Your group starts ' + (CAT_INDEX === 0 ? 'first' : CAT_INDEX*5 + ' min after the first group');
+      main.innerHTML = `<div class="waitmsg">Your first exercise appears here automatically when the event clock reaches your group's start.</div>`;
+      return;
+    }
+
+    if (idx === SPRINT_IDX) {
+      nameEl.textContent = 'Gate 4 — Sprint Finish';
+      benchEl.textContent = sprintExs.map(x=>x.name).join(' → ') + ' · tap FINISHED as they cross';
+      main.innerHTML = `<div class="sprintclock" id="sprintClock">${fmt(Math.max(0, e - GATES123_SEC))}</div>` + finHtml(TEAM_A) + finHtml(TEAM_B);
+      wireG4();
+      return;
+    }
+
+    const ex = timed[idx];
+    nameEl.textContent = `Gate ${ex.gate_number} · ${ex.name}`;
+    benchEl.textContent = ex.benchmark_desc || '';
+    if (ex.unit === 'reps') {
+      main.innerHTML = zoneHtml(TEAM_A, ex) + zoneHtml(TEAM_B, ex);
+      wireTaps(ex);
+    } else {
+      main.innerHTML = entryHtml(TEAM_A, ex) + entryHtml(TEAM_B, ex);
+      wireEntries(ex);
+    }
+  }
+
+  function refreshCountsOnly(idx){
+    if (idx === SPRINT_IDX) {
+      const sc = document.getElementById('sprintClock');
+      if (sc) sc.textContent = fmt(Math.max(0, catElapsed() - GATES123_SEC));
+    }
+  }
+
+  function wireTaps(ex){
+    main.querySelectorAll('[data-tap]').forEach(z => {
+      z.addEventListener('pointerdown', (ev) => {
+        if (ev.target.closest('[data-minus]')) return;
+        const tid = parseInt(z.dataset.tap);
+        values[ex.id][tid] += 1;
+        render(true); saveResult(ex.id, tid);
+      });
+    });
+    main.querySelectorAll('[data-minus]').forEach(b => {
+      b.addEventListener('pointerdown', (ev) => {
+        ev.stopPropagation();
+        const tid = parseInt(b.dataset.minus);
+        values[ex.id][tid] = Math.max(0, values[ex.id][tid] - 1);
+        render(true); saveResult(ex.id, tid);
+      });
+    });
+  }
+  function wireEntries(ex){
+    main.querySelectorAll('[data-entrysave]').forEach(b => {
+      b.addEventListener('click', () => {
+        const tid = parseInt(b.dataset.entrysave);
+        const input = main.querySelector(`[data-entry="${tid}"]`);
+        const v = parseFloat(input.value);
+        if (isFinite(v) && v >= 0) { values[ex.id][tid] = v; render(true); saveResult(ex.id, tid); }
+      });
+    });
+  }
+  function wireG4(){
+    main.querySelectorAll('[data-fin]').forEach(b => {
+      b.addEventListener('click', () => {
+        const tid = parseInt(b.dataset.fin);
+        g4[tid].completed = 1;
+        g4[tid].total_time_sec = Math.round(Math.max(0, catElapsed() - GATES123_SEC) * 10) / 10;
+        render(true); saveG4(tid);
+      });
+    });
+    main.querySelectorAll('[data-unfin]').forEach(b => {
+      b.addEventListener('click', () => {
+        const tid = parseInt(b.dataset.unfin);
+        g4[tid].completed = 0; g4[tid].total_time_sec = null;
+        render(true); saveG4(tid);
+      });
+    });
+  }
+
+  pollClock().then(() => render(true));
+  setInterval(pollClock, 1000);
+  setInterval(() => render(false), 250);
+</script>
+
+</body>
+</html>

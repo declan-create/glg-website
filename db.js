@@ -147,16 +147,17 @@ CREATE TABLE IF NOT EXISTS category_gate4_results (
   UNIQUE(fixture_id, team_id, category)
 );
 
--- A judge is assigned to one gate for one fixture — they can only enter
--- scores for exercises within that gate. One judge can hold several
--- assignments (different gates, different fixtures).
+-- A judge is assigned to one CATEGORY (participant group) for one fixture —
+-- they follow that category through every exercise, counting reps for both
+-- teams' athletes in it. One judge can hold several assignments
+-- (different categories, different fixtures).
 CREATE TABLE IF NOT EXISTS judge_assignments (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER REFERENCES users(id),
   fixture_id INTEGER REFERENCES fixtures(id),
-  gate_id INTEGER REFERENCES gates(id),
+  category TEXT,
   created_at TEXT DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(user_id, fixture_id, gate_id)
+  UNIQUE(user_id, fixture_id, category)
 );
 
 -- Server-side clock state so the Cast Display's timer and the public
@@ -172,6 +173,25 @@ CREATE TABLE IF NOT EXISTS fixture_clocks (
   UNIQUE(fixture_id, mode)
 );
 `);
+
+// Migration: judge assignments moved from per-gate to per-category. If an
+// older database still has the gate_id column, rebuild the table — judge
+// assignments are quick to re-enter from the fixture page and nothing else
+// references this table, so a clean rebuild is the safest path.
+const jaCols = db.prepare("PRAGMA table_info(judge_assignments)").all().map(c => c.name);
+if (jaCols.includes('gate_id')) {
+  db.exec(`
+    DROP TABLE judge_assignments;
+    CREATE TABLE judge_assignments (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER REFERENCES users(id),
+      fixture_id INTEGER REFERENCES fixtures(id),
+      category TEXT,
+      created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, fixture_id, category)
+    );
+  `);
+}
 
 // ============ SEED (idempotent) ============
 function seed() {
@@ -206,7 +226,7 @@ function seed() {
   insUser.run("glynn@gymleagueglobal.com.au", hash("GLGadmin2026!"), "admin", "Glynn", "Pearman");
   insUser.run("matthew@gymleagueglobal.com.au", hash("GLGadmin2026!"), "admin", "Matthew", "Murphy");
 
-  // Sample judge accounts (unassigned by default — assign them to a gate from the fixture page)
+  // Sample judge accounts (unassigned by default — assign them to a category from the fixture page)
   insUser.run("judge1@gymleagueglobal.com.au", hash("Judge2026!"), "judge", "Sam", "Judge1");
   insUser.run("judge2@gymleagueglobal.com.au", hash("Judge2026!"), "judge", "Alex", "Judge2");
 

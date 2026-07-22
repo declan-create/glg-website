@@ -13,6 +13,7 @@ process.env.SESSION_SECRET = 'test-secret';
 
 const request = require('supertest');
 const app = require('../server');
+const db = require('../db'); // same connection as the app (GLG_DB_PATH is already set above)
 
 // A real listening server (unlike supertest's in-process requests) is needed
 // for the one test that drives an actual browser via Playwright.
@@ -248,13 +249,13 @@ test('cast display: client-side JS actually runs without error and renders all 5
   dom.window.close();
 });
 
-test('judge: assigned to a gate via gym admin, then can log in and access only that gate', async () => {
+test('judge: assigned to a category via gym admin, then can log in and access only that category', async () => {
   const gymAgent = request.agent(app);
   await gymAgent.post('/login').type('form').send({
     email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
   });
   const assignRes = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
-    judge_email: 'judge1@gymleagueglobal.com.au', gate_id: 1,
+    judge_email: 'judge1@gymleagueglobal.com.au', category: 'mens_singles',
   });
   assert.strictEqual(assignRes.status, 302);
 
@@ -264,22 +265,25 @@ test('judge: assigned to a gate via gym admin, then can log in and access only t
   });
   const dashboard = await judgeAgent.get('/judge');
   assert.strictEqual(dashboard.status, 200);
-  assert.match(dashboard.text, /Gate 1/);
+  assert.match(dashboard.text, /Men(&#39;|')s Singles/);
 
-  const allowedGate = await judgeAgent.get('/judge/fixture/1/gate/1');
-  assert.strictEqual(allowedGate.status, 200);
+  const allowedCat = await judgeAgent.get('/judge/fixture/1/category/mens_singles');
+  assert.strictEqual(allowedCat.status, 200);
+  // their entry page covers ALL gates for their category
+  assert.match(allowedCat.text, /Gate 1/);
+  assert.match(allowedCat.text, /Gate 4/);
 
-  const blockedGate = await judgeAgent.get('/judge/fixture/1/gate/2');
-  assert.strictEqual(blockedGate.status, 403);
+  const blockedCat = await judgeAgent.get('/judge/fixture/1/category/womens_singles');
+  assert.strictEqual(blockedCat.status, 403);
 });
 
-test('judge: submitting a score for their assigned gate computes correctly and is blocked for other gates', async () => {
+test('judge: submitting a score for their assigned category works and other categories are blocked or ignored', async () => {
   const gymAgent = request.agent(app);
   await gymAgent.post('/login').type('form').send({
     email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
   });
   await gymAgent.post('/fixture/1/assign-judge').type('form').send({
-    judge_email: 'judge2@gymleagueglobal.com.au', gate_id: 1,
+    judge_email: 'judge2@gymleagueglobal.com.au', category: 'womens_singles',
   });
 
   const judgeAgent = request.agent(app);
@@ -287,14 +291,21 @@ test('judge: submitting a score for their assigned gate computes correctly and i
     email: 'judge2@gymleagueglobal.com.au', password: 'Judge2026!', next: '/judge',
   });
 
-  const submitRes = await judgeAgent.post('/judge/fixture/1/gate/1').type('form').send({
+  const submitRes = await judgeAgent.post('/judge/fixture/1/category/womens_singles').type('form').send({
     result_1_1_womens_singles: '900', // benchmark 800, should score 2pts if it beats the opponent too
     result_2_1_womens_singles: '850',
+    result_1_1_mens_singles: '999', // NOT their category — must be silently ignored, not written
   });
   assert.strictEqual(submitRes.status, 302);
 
-  // blocked from submitting to a gate they aren't assigned to
-  const blockedSubmit = await judgeAgent.post('/judge/fixture/1/gate/2').type('form').send({
+  // the sneaky cross-category value must not have been written
+  const crossRow = db.prepare(
+    "SELECT * FROM category_results WHERE fixture_id=1 AND exercise_id=1 AND team_id=1 AND category='mens_singles' AND raw_value=999"
+  ).get();
+  assert.strictEqual(crossRow, undefined, 'A category judge must not be able to write another category\'s results');
+
+  // blocked entirely from a category route they aren't assigned to
+  const blockedSubmit = await judgeAgent.post('/judge/fixture/1/category/mens_singles').type('form').send({
     result_1_4_mens_singles: '999',
   });
   assert.strictEqual(blockedSubmit.status, 403);
@@ -607,7 +618,7 @@ test('judge assignment: creates a new judge account on the fly and lets them log
   });
   const assignRes = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
     judge_first_name: 'Test', judge_last_name: 'Judge', judge_phone: '0400 000 111',
-    judge_email: 'newjudgetest@example.com', gate_id: 1,
+    judge_email: 'newjudgetest@example.com', category: 'mens_doubles',
   });
   assert.strictEqual(assignRes.status, 302);
   assert.match(assignRes.headers.location, /judgeAssigned=1/);
@@ -618,7 +629,7 @@ test('judge assignment: creates a new judge account on the fly and lets them log
   });
   assert.strictEqual(loginRes.status, 302);
   const dashRes = await judgeAgent.get('/judge');
-  assert.match(dashRes.text, /Gate 1/);
+  assert.match(dashRes.text, /Men(&#39;|')s Doubles/);
 });
 
 test('judge assignment: reassigning the same email does not create a duplicate account', async () => {
@@ -627,16 +638,98 @@ test('judge assignment: reassigning the same email does not create a duplicate a
     email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
   });
   await gymAgent.post('/fixture/1/assign-judge').type('form').send({
-    judge_first_name: 'Dup', judge_email: 'duplicatejudgetest@example.com', gate_id: 1,
+    judge_first_name: 'Dup', judge_email: 'duplicatejudgetest@example.com', category: 'mens_singles',
   });
   const secondAssign = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
-    judge_email: 'duplicatejudgetest@example.com', gate_id: 2,
+    judge_email: 'duplicatejudgetest@example.com', category: 'womens_singles',
   });
   assert.strictEqual(secondAssign.status, 302);
 
   const dashRes = await gymAgent.get('/fixture/1/results');
   const occurrences = (dashRes.text.match(/duplicatejudgetest@example\.com/g) || []).length;
-  assert.strictEqual(occurrences, 2, 'Should appear twice (once per gate assignment), from one account — not a duplicate account');
+  assert.strictEqual(occurrences, 2, 'Should appear twice (once per category assignment), from one account — not a duplicate account');
+});
+
+test('live counter: page loads for assigned category and its save API writes + recomputes', async () => {
+  const gymAgent = request.agent(app);
+  await gymAgent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+  await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+    judge_first_name: 'Live', judge_email: 'livejudge@example.com', category: 'mixed_doubles',
+  });
+
+  const judgeAgent = request.agent(app);
+  await judgeAgent.post('/login').type('form').send({
+    email: 'livejudge@example.com', password: 'GLGWelcome2026!', next: '/judge',
+  });
+
+  const page = await judgeAgent.get('/judge/fixture/1/category/mixed_doubles/live');
+  assert.strictEqual(page.status, 200);
+  assert.match(page.text, /tap anywhere|FINISHED|Live/i);
+
+  // blocked from another category's live page
+  const blockedPage = await judgeAgent.get('/judge/fixture/1/category/mens_singles/live');
+  assert.strictEqual(blockedPage.status, 403);
+
+  // tap-save API writes a result and recompute assigns points
+  const save = await judgeAgent
+    .post('/api/judge/fixture/1/category/mixed_doubles/result')
+    .send({ exercise_id: 2, team_id: 1, raw_value: 61 }); // TBDL, mixed benchmark 30+30=60 -> benchmark met
+  assert.strictEqual(save.status, 200);
+  assert.strictEqual(save.body.ok, true);
+  assert.strictEqual(save.body.results['1'].benchmark_met, 1);
+
+  // cross-category write through the API is rejected outright
+  const blockedSave = await judgeAgent
+    .post('/api/judge/fixture/1/category/mens_singles/result')
+    .send({ exercise_id: 2, team_id: 1, raw_value: 999 });
+  assert.strictEqual(blockedSave.status, 403);
+
+  // sprint-finish exercises can't be written through the per-exercise endpoint
+  const sprintEx = db.prepare(
+    "SELECT e.id FROM exercises e JOIN gates g ON g.id=e.gate_id WHERE g.is_sprint_finish=1 LIMIT 1"
+  ).get();
+  const badEx = await judgeAgent
+    .post('/api/judge/fixture/1/category/mixed_doubles/result')
+    .send({ exercise_id: sprintEx.id, team_id: 1, raw_value: 10 });
+  assert.strictEqual(badEx.status, 400);
+
+  // clean up the score written above so later tests start from an empty board
+  db.prepare("DELETE FROM category_results WHERE fixture_id=1 AND category='mixed_doubles'").run();
+  require('../scoring').recomputeFixtureScores(1);
+});
+
+test('live counter: Gate 4 finish stamp records completion + time and undo clears it', async () => {
+  const judgeAgent = request.agent(app);
+  await judgeAgent.post('/login').type('form').send({
+    email: 'livejudge@example.com', password: 'GLGWelcome2026!', next: '/judge',
+  });
+
+  const stamp = await judgeAgent
+    .post('/api/judge/fixture/1/category/mixed_doubles/gate4')
+    .send({ team_id: 1, completed: 1, total_time_sec: 512.4 });
+  assert.strictEqual(stamp.status, 200);
+  assert.strictEqual(stamp.body.gate4['1'].completed, 1);
+  assert.strictEqual(stamp.body.gate4['1'].total_time_sec, 512.4);
+  assert.strictEqual(stamp.body.gate4['1'].points, 6, 'Only completer so far: 3 for completing + 3 for fastest');
+
+  const undo = await judgeAgent
+    .post('/api/judge/fixture/1/category/mixed_doubles/gate4')
+    .send({ team_id: 1, completed: 0, total_time_sec: null });
+  assert.strictEqual(undo.status, 200);
+  assert.strictEqual(undo.body.gate4['1'].completed, 0);
+  assert.strictEqual(undo.body.gate4['1'].points, 0);
+
+  // remove the row entirely so later tests see a completely untouched board
+  db.prepare("DELETE FROM category_gate4_results WHERE fixture_id=1 AND category='mixed_doubles'").run();
+  require('../scoring').recomputeFixtureScores(1);
+});
+
+test('password fields ship with the show/hide (eye) toggle script', async () => {
+  const res = await request(app).get('/login');
+  assert.strictEqual(res.status, 200);
+  assert.match(res.text, /Show password/, 'Login page should include the password visibility toggle');
 });
 
 test('judge assignment: rejects assigning an email that belongs to a non-judge account', async () => {
@@ -647,7 +740,7 @@ test('judge assignment: rejects assigning an email that belongs to a non-judge a
   // Use the gym admin's own email — guaranteed to exist and stay non-judge
   // throughout the run, unlike a TBA placeholder another test might rename.
   const res = await gymAgent.post('/fixture/1/assign-judge').type('form').send({
-    judge_first_name: 'Should', judge_email: 'admin@bftpymble.com.au', gate_id: 1,
+    judge_first_name: 'Should', judge_email: 'admin@bftpymble.com.au', category: 'mens_singles',
   });
   assert.match(res.headers.location, /judgeError=notjudge/);
 });

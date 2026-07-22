@@ -93,22 +93,23 @@
     </form>
 
     <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Judge Assignments</h3>
-    <p class="lede">Assign a judge to a gate so they can log in and enter scores for just that gate as each exercise finishes. If the email below isn't an existing judge account yet, one is created automatically — just fill in their name too.</p>
+    <p class="lede">Assign a judge to a participant group (category) — they follow that category through all 12 exercises, counting reps for both teams, and can only enter scores for their own category. If the email below isn't an existing judge account yet, one is created automatically — just fill in their name too.</p>
 
     <% if (query.judgeAssigned) { %><div class="form-success">Judge assigned.</div><% } %>
     <% if (query.judgeError === 'email') { %><div class="form-error">Please enter a valid email address.</div><% } %>
+    <% if (query.judgeError === 'category') { %><div class="form-error">Please pick a category.</div><% } %>
     <% if (query.judgeError === 'name') { %><div class="form-error">Please enter the judge's first name (needed to create their account).</div><% } %>
     <% if (query.judgeError === 'notjudge') { %><div class="form-error">That email already belongs to a non-judge account — use a different email, or ask them to use a separate one for judging.</div><% } %>
 
     <div class="table-wrap" style="margin-bottom:1rem;">
       <table>
-        <tr><th>Gate</th><th>Judge</th><th>Phone</th><th></th></tr>
+        <tr><th>Category</th><th>Judge</th><th>Phone</th><th></th></tr>
         <% if (judgeAssignments.length === 0) { %>
           <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1rem;">No judges assigned yet.</td></tr>
         <% } %>
         <% judgeAssignments.forEach(ja => { %>
           <tr>
-            <td>Gate <%= ja.gate_number %> — <%= ja.gate_name %></td>
+            <td><%= categoryLabel[ja.category] || ja.category %></td>
             <td><%= ja.first_name %> <%= ja.last_name %> (<%= ja.judge_email %>)</td>
             <td style="color:var(--muted);"><%= ja.judge_phone || '—' %></td>
             <td>
@@ -140,14 +141,14 @@
           <input type="email" name="judge_email" placeholder="judge@example.com" required>
         </div>
         <div>
-          <label style="margin-top:0;">Gate</label>
-          <select name="gate_id" required>
-            <% gates.forEach(g => { %><option value="<%= g.id %>">Gate <%= g.number %> — <%= g.name %></option><% }) %>
+          <label style="margin-top:0;">Category</label>
+          <select name="category" required>
+            <% Object.keys(categoryLabel).forEach(cat => { %><option value="<%= cat %>"><%= categoryLabel[cat] %></option><% }) %>
           </select>
         </div>
         <button type="submit" class="btn btn-primary btn-sm">Assign Judge</button>
       </form>
-      <p class="helptext">If this email is already a judge, the name/phone fields are ignored and they're just assigned to the gate. If it's a brand-new email, first name is required to create their account (default password: <strong>GLGWelcome2026!</strong>).</p>
+      <p class="helptext">If this email is already a judge, the name/phone fields are ignored and they're just assigned to the category. If it's a brand-new email, first name is required to create their account (default password: <strong>GLGWelcome2026!</strong>).</p>
     </div>
   </div>
 </section>

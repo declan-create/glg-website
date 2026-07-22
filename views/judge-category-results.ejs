@@ -1,0 +1,89 @@
+<section class="section">
+  <div class="container">
+    <% if (query.saved) { %><div class="form-success">Scores saved and recalculated.</div><% } %>
+    <div class="section-eyebrow">Judging <%= categoryLabel[category] %></div>
+    <h2><%= fixture.team_a_name %> vs <%= fixture.team_b_name %></h2>
+    <p class="lede">
+      You're counting for both teams' <%= categoryLabel[category] %> athletes across every exercise.
+      Enter each result as soon as the exercise finishes and save as you go — don't wait until the end.
+      For Doubles/Mixed, enter the pair's single combined performance.
+    </p>
+    <div style="font-size:.85rem;color:var(--muted);margin-bottom:1rem;">
+      <strong><%= fixture.team_a_name %>:</strong> <%= namesA.join(' & ') || '—' %>
+      &nbsp;·&nbsp;
+      <strong><%= fixture.team_b_name %>:</strong> <%= namesB.join(' & ') || '—' %>
+    </div>
+
+    <form method="POST" action="/judge/fixture/<%= fixture.id %>/category/<%= category %>">
+      <% gates.filter(g => !g.is_sprint_finish).forEach(gate => { %>
+        <h3 style="margin-top:2rem;font-size:1.2rem;color:var(--forest);">Gate <%= gate.number %> — <%= gate.name %></h3>
+        <% exercises.filter(e => e.gate_id === gate.id).forEach(ex => { %>
+          <div class="card" style="margin-top:.8rem;">
+            <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;color:var(--forest);margin-bottom:.2rem;font-size:1.1rem;"><%= ex.name %></div>
+            <div style="font-size:.78rem;color:var(--muted);margin-bottom:.8rem;">Benchmark: <%= ex.benchmark_desc %> · unit: <%= ex.unit %></div>
+            <div class="table-wrap">
+              <table>
+                <tr><th><%= fixture.team_a_name %></th><th><%= fixture.team_b_name %></th></tr>
+                <tr>
+                  <td>
+                    <% const rA = resultMap[fixture.team_a_id+'_'+ex.id]; %>
+                    <input type="number" step="0.1" style="width:110px;" name="result_<%= fixture.team_a_id %>_<%= ex.id %>_<%= category %>"
+                      value="<%= rA ? rA.raw_value : '' %>" placeholder="<%= ex.unit %>" <%= namesA.length ? '' : 'disabled' %>>
+                    <% if (rA) { %><span class="pill" style="font-size:.6rem;"><%= rA.points %>pt</span><% } %>
+                  </td>
+                  <td>
+                    <% const rB = resultMap[fixture.team_b_id+'_'+ex.id]; %>
+                    <input type="number" step="0.1" style="width:110px;" name="result_<%= fixture.team_b_id %>_<%= ex.id %>_<%= category %>"
+                      value="<%= rB ? rB.raw_value : '' %>" placeholder="<%= ex.unit %>" <%= namesB.length ? '' : 'disabled' %>>
+                    <% if (rB) { %><span class="pill" style="font-size:.6rem;"><%= rB.points %>pt</span><% } %>
+                  </td>
+                </tr>
+              </table>
+            </div>
+          </div>
+        <% }) %>
+      <% }) %>
+
+      <% const g4 = gates.find(g => g.is_sprint_finish); %>
+      <% if (g4) { %>
+        <h3 style="margin-top:2rem;font-size:1.2rem;color:var(--forest);">Gate <%= g4.number %> — <%= g4.name %></h3>
+        <div class="card" style="margin-top:.8rem;">
+          <div style="font-size:.82rem;color:var(--muted);margin-bottom:1rem;">
+            Sprint finish (<%= exercises.filter(e => e.gate_id === g4.id).map(e => e.name).join(' → ') %>) —
+            no time limit, it takes as long as it takes. Tick Completed and record the total time in seconds.
+            Completion is worth 3 points; the faster time earns 3 more.
+          </div>
+          <div class="table-wrap">
+            <table>
+              <tr><th><%= fixture.team_a_name %></th><th><%= fixture.team_b_name %></th></tr>
+              <tr>
+                <td>
+                  <% const gA = g4Map[fixture.team_a_id]; %>
+                  <label style="display:flex;align-items:center;gap:.4rem;font-size:.72rem;text-transform:none;letter-spacing:0;font-weight:500;margin:0;">
+                    <input type="checkbox" name="g4_<%= fixture.team_a_id %>_<%= category %>_completed" <%= gA && gA.completed ? 'checked' : '' %> style="width:auto;" <%= namesA.length ? '' : 'disabled' %>> Completed
+                  </label>
+                  <input type="number" step="0.1" style="width:90px;margin-top:.3rem;" name="g4_<%= fixture.team_a_id %>_<%= category %>_time" placeholder="sec"
+                    value="<%= gA ? gA.total_time_sec : '' %>" <%= namesA.length ? '' : 'disabled' %>>
+                  <% if (gA) { %><span class="pill" style="font-size:.6rem;"><%= gA.points %>pt</span><% } %>
+                </td>
+                <td>
+                  <% const gB = g4Map[fixture.team_b_id]; %>
+                  <label style="display:flex;align-items:center;gap:.4rem;font-size:.72rem;text-transform:none;letter-spacing:0;font-weight:500;margin:0;">
+                    <input type="checkbox" name="g4_<%= fixture.team_b_id %>_<%= category %>_completed" <%= gB && gB.completed ? 'checked' : '' %> style="width:auto;" <%= namesB.length ? '' : 'disabled' %>> Completed
+                  </label>
+                  <input type="number" step="0.1" style="width:90px;margin-top:.3rem;" name="g4_<%= fixture.team_b_id %>_<%= category %>_time" placeholder="sec"
+                    value="<%= gB ? gB.total_time_sec : '' %>" <%= namesB.length ? '' : 'disabled' %>>
+                  <% if (gB) { %><span class="pill" style="font-size:.6rem;"><%= gB.points %>pt</span><% } %>
+                </td>
+              </tr>
+            </table>
+          </div>
+        </div>
+      <% } %>
+
+      <button type="submit" class="btn btn-primary" style="margin-top:1.5rem;">Save These Scores</button>
+    </form>
+
+    <a href="/judge" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;">← Back to My Assignments</a>
+  </div>
+</section>
