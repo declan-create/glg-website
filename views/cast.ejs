@@ -102,16 +102,17 @@
   const gate4 = gates.find(g => g.is_sprint_finish);
   const gate4Exercises = gate4 ? exercises.filter(e => e.gate_id === gate4.id) : [];
 
-  // One continuous list: the 9 real exercises from Gates 1-3, then a single
-  // 15-minute Gate 4 stage at the end — same total length as any other gate,
-  // just run as one block instead of 3 separate 5-minute exercises. No manual
-  // switching between gates; everything flows automatically off one clock.
+  // One continuous list: the 9 timed exercises from Gates 1-3. Gate 4 is not
+  // in this list — it has no time limit (see GATE4_NAME / GATES123_SEC below).
+  // No manual switching between gates; everything flows off one clock.
   const STAGES = [
     ...gates123.flatMap(g => exercises.filter(e => e.gate_id === g.id).map(e => ({ name: `Gate ${g.number}: ${e.name}`, seconds: STAGE_SEC }))),
-    { name: `Gate 4: Sprint Finish (${gate4Exercises.map(e=>e.name).join(' → ')})`, seconds: 15 * 60 },
   ];
-  const TOTAL_PER_CATEGORY = STAGES.reduce((s,x) => s+x.seconds, 0);
-  const TOTAL_DURATION = OFFSET_SEC * (categoryOrder.length - 1) + TOTAL_PER_CATEGORY;
+  // Gate 4 is OPEN-ENDED: it takes as long as it takes. Once a category has
+  // finished the 9 timed stages of Gates 1-3, its clock flips to a stopwatch
+  // counting UP until the operator pauses/resets — no fixed 15-minute block.
+  const GATES123_SEC = STAGES.reduce((s,x) => s+x.seconds, 0);
+  const GATE4_NAME = `Gate 4: Sprint Finish (${gate4Exercises.map(e=>e.name).join(' → ')})`;
 
   let serverElapsed = 0, serverRunning = false, lastPollTime = Date.now();
 
@@ -148,7 +149,6 @@
 
     const clockEl = document.getElementById('masterClock');
     clockEl.textContent = fmt(masterSeconds, true);
-    clockEl.classList.toggle('finished', masterSeconds >= TOTAL_DURATION);
 
     document.getElementById('catGrid').innerHTML = categoryOrder.map((cat, i) => {
       const offset = i * OFFSET_SEC;
@@ -159,12 +159,17 @@
 
       let rowClass = '', stageLabel = '', stageName = '', remaining = '';
       if (elapsed < 0) { rowClass='is-wait'; stageLabel='Starts in'; stageName=fmt(-elapsed); }
-      else if (elapsed >= TOTAL_PER_CATEGORY) { rowClass='is-done'; stageLabel='Status'; stageName='Finished'; }
+      else if (elapsed >= GATES123_SEC) {
+        rowClass='is-live';
+        stageLabel = 'Sprint time (counting up)';
+        stageName = GATE4_NAME;
+        remaining = fmt(elapsed - GATES123_SEC, true);
+      }
       else {
         rowClass='is-live';
         let cum=0, stageIdx=0;
         for (let s=0;s<STAGES.length;s++){ if (elapsed<cum+STAGES[s].seconds){stageIdx=s;break;} cum+=STAGES[s].seconds; }
-        stageLabel = `Stage ${stageIdx+1} of ${STAGES.length}`;
+        stageLabel = `Stage ${stageIdx+1} of ${STAGES.length+1}`;
         stageName = STAGES[stageIdx].name;
         remaining = fmt(STAGES[stageIdx].seconds - (elapsed-cum), true);
       }

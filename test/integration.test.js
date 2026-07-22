@@ -375,8 +375,14 @@ test('cast display and watch page: no gate-switching tabs — everything flows o
     await page.fill('input[name=password]', 'GymAdmin2026!');
     await page.click('button[type=submit]');
     await page.goto('http://localhost:' + PORT_UNDER_TEST + '/cast/1');
-    const stageCount = await page.evaluate(() => window.STAGES ? window.STAGES.length : (typeof STAGES !== 'undefined' ? STAGES.length : -1));
-    assert.strictEqual(stageCount, 10, `Expected 10 total stages (9 exercises + 1 Gate 4 block) at runtime, got ${stageCount}`);
+    const runtime = await page.evaluate(() => ({
+      stageCount: (typeof STAGES !== 'undefined') ? STAGES.length : -1,
+      gate4Name: (typeof GATE4_NAME !== 'undefined') ? GATE4_NAME : null,
+      gates123Sec: (typeof GATES123_SEC !== 'undefined') ? GATES123_SEC : -1,
+    }));
+    assert.strictEqual(runtime.stageCount, 9, `Expected 9 timed stages (Gates 1-3 only; Gate 4 is open-ended), got ${runtime.stageCount}`);
+    assert.match(runtime.gate4Name || '', /Gate 4: Sprint Finish/, 'Gate 4 should exist as a separate open-ended stage');
+    assert.strictEqual(runtime.gates123Sec, 9 * 5 * 60, 'Gates 1-3 should total 45 minutes of timed stages');
   } finally {
     await browser.close();
   }
