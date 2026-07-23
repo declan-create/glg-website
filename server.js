@@ -697,6 +697,20 @@ app.post('/fixture/:id/results', requireLogin, (req, res) => {
   res.redirect(`/fixture/${fixtureId}/results?saved=1`);
 });
 
+// ---- Clear all results for a fixture (wipes test data before a real event) ----
+// Deliberately separate from the results form: blanking a field there is
+// ignored, so this is the only way to remove scores. Clock is untouched.
+app.post('/fixture/:id/clear-results', requireLogin, (req, res) => {
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
+  if (!fixture || !canManageFixture(req.session.user, fixture)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You can only clear results for your own gym's fixtures." });
+  }
+  db.prepare("DELETE FROM category_results WHERE fixture_id=?").run(fixture.id);
+  db.prepare("DELETE FROM category_gate4_results WHERE fixture_id=?").run(fixture.id);
+  scoring.recomputeFixtureScores(fixture.id);
+  res.redirect(`/fixture/${fixture.id}/results?cleared=1`);
+});
+
 // ---- Judge assignment (gym admin / GLG admin assigns a judge to a category for a fixture) ----
 app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
   const fixture = db.prepare(`

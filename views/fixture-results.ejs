@@ -92,12 +92,20 @@
       <button type="submit" class="btn btn-primary" style="margin-top:2rem;">Save Results & Recalculate Scores</button>
     </form>
 
+    <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Clear Results</h3>
+    <p class="lede">Wipes every score for this fixture — all categories, all exercises, and Gate 4 — and resets both team totals to zero. Use this to clear test data before a real event. Judge assignments and the clock are not affected.</p>
+    <form method="POST" action="/fixture/<%= fixture.id %>/clear-results"
+          onsubmit="return confirm('Delete ALL scores for this fixture? This cannot be undone.');">
+      <button type="submit" class="btn btn-outline" style="border-color:#d64545;color:#d64545;">Clear All Results</button>
+    </form>
+
     <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Judge Assignments</h3>
     <p class="lede">Assign a judge to a participant group (category) — they follow that category through all 12 exercises, counting reps for both teams, and can only enter scores for their own category. If the email below isn't an existing judge account yet, one is created automatically — just fill in their name too.</p>
 
     <% if (query.judgeAssigned) { %><div class="form-success">Judge assigned.</div><% } %>
     <% if (query.judgeError === 'email') { %><div class="form-error">Please enter a valid email address.</div><% } %>
     <% if (query.judgeError === 'category') { %><div class="form-error">Please pick a category.</div><% } %>
+    <% if (query.cleared) { %><div class="form-success">All results cleared — the board is back to zero.</div><% } %>
     <% if (query.judgeError === 'name') { %><div class="form-error">Please enter the judge's first name (needed to create their account).</div><% } %>
     <% if (query.judgeError === 'notjudge') { %><div class="form-error">That email already belongs to a non-judge account — use a different email, or ask them to use a separate one for judging.</div><% } %>
 

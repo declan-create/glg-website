@@ -782,6 +782,45 @@ test('mail is a safe no-op when SMTP is not configured', async () => {
   assert.ok(res === null || typeof res === 'object'); // json transport returns an object; unconfigured returns null
 });
 
+test('clear results: wipes every score for the fixture and zeroes the totals', async () => {
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+  });
+
+  // put some scores in, including a Gate 4 result
+  await agent.post('/fixture/1/results').type('form').send({
+    result_1_1_womens_singles: '900', result_2_1_womens_singles: '850',
+    result_1_2_mens_doubles: '40',
+    g4_1_womens_singles_completed: 'on', g4_1_womens_singles_time: '480',
+  });
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM category_results WHERE fixture_id=1").get().c > 0);
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM category_gate4_results WHERE fixture_id=1").get().c > 0);
+
+  const clear = await agent.post('/fixture/1/clear-results').type('form').send({});
+  assert.strictEqual(clear.status, 302);
+
+  assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM category_results WHERE fixture_id=1").get().c, 0, 'All exercise results should be gone');
+  assert.strictEqual(db.prepare("SELECT COUNT(*) c FROM category_gate4_results WHERE fixture_id=1").get().c, 0, 'Gate 4 results should be gone');
+
+  // the board's headline totals come from the live-scores feed, not a stored column
+  const feed = await request(app).get('/api/fixture/1/live-scores');
+  const totals = feed.body._totals || {};
+  assert.ok(!totals['1'] && !totals['2'], `Both team totals should be back to zero, got ${JSON.stringify(totals)}`);
+
+  // judge assignments must survive a results wipe
+  assert.ok(db.prepare("SELECT COUNT(*) c FROM judge_assignments WHERE fixture_id=1").get().c > 0, 'Judge assignments must not be deleted');
+});
+
+test('clear results: a judge cannot clear a fixture', async () => {
+  const judgeAgent = request.agent(app);
+  await judgeAgent.post('/login').type('form').send({
+    email: 'livejudge@example.com', password: 'GLGWelcome2026!', next: '/judge',
+  });
+  const res = await judgeAgent.post('/fixture/1/clear-results').type('form').send({});
+  assert.strictEqual(res.status, 403);
+});
+
 test('password fields ship with the show/hide (eye) toggle script', async () => {
   const res = await request(app).get('/login');
   assert.strictEqual(res.status, 200);
