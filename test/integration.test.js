@@ -860,7 +860,14 @@ test('live scores: an already-open watch page picks up a newly submitted score w
     await page.goto('http://localhost:' + PORT_UNDER_TEST + '/watch/1');
     await page.waitForTimeout(500);
 
-    const before = await page.locator('.cat-scores[data-cat="mixed_doubles"]').innerText();
+    // Mixed Doubles is the 3rd row in the new start order; each row has two
+    // team strips of 10 point-cells plus a running total.
+    const mixedRow = page.locator('.cat-row').nth(2);
+    const readStrips = async () => ({
+      filledCells: await mixedRow.locator('.pcell.p0, .pcell.p1, .pcell.p2').count(),
+      totals: await mixedRow.locator('.strip-total').allInnerTexts(),
+    });
+    const before = await readStrips();
 
     const agent = request.agent(app);
     await agent.post('/login').type('form').send({
@@ -871,11 +878,12 @@ test('live scores: an already-open watch page picks up a newly submitted score w
     });
 
     await page.waitForTimeout(4000); // longer than the 3s poll interval — no reload
-    const after = await page.locator('.cat-scores[data-cat="mixed_doubles"]').innerText();
+    const after = await readStrips();
 
-    assert.strictEqual(before, '', 'Should show no score before the result is submitted');
-    assert.notStrictEqual(after, '', 'Should show a live score after the result is submitted, without reloading');
-    assert.match(after, /\d+\s*–\s*\d+/, `Expected a "points – points" score line, got "${after}"`);
+    assert.strictEqual(before.filledCells, 0, 'No point cells should be filled before the result is submitted');
+    assert.deepStrictEqual(before.totals, ['0', '0'], 'Category totals should start at 0 – 0');
+    assert.ok(after.filledCells >= 2, 'Both teams\' cells should fill after the result lands, without reloading');
+    assert.notDeepStrictEqual(after.totals, ['0', '0'], 'Category totals should update live');
   } finally {
     await browser.close();
   }

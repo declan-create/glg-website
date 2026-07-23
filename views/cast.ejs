@@ -39,12 +39,29 @@
   .clock-controls button.danger:hover{background:#DC2626;color:#fff;border-color:#DC2626;}
 
   .cat-grid{display:grid;grid-template-columns:1fr;gap:.7rem;margin-top:1rem;}
-  .cat-row{display:grid;grid-template-columns:1.3fr 1.6fr 1.6fr 1fr;gap:1rem;align-items:center;
+  .cat-row{display:grid;grid-template-columns:.75fr 2.5fr 1.15fr .55fr;gap:1rem;align-items:center;
     background:rgba(241,245,249,.05);border:1px solid rgba(241,245,249,.1);border-radius:10px;padding:1rem 1.4rem;}
   .cat-row.is-live{border-color:var(--lime);background:rgba(163,230,53,.08);}
   .cat-row.is-done{opacity:.45;}
   .cat-name{font-family:'Bebas Neue',sans-serif;font-size:1.4rem;color:var(--lime);}
   .cat-athletes{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:.85rem;line-height:1.5;}
+  /* per-team score strips: name + 10 point cells (9 exercises + G4) + running total */
+  .team-strip{display:flex;align-items:center;gap:.55rem;margin:.14rem 0;}
+  .team-strip .team-tag{font-family:'Barlow Condensed',sans-serif;font-weight:700;color:#8AA398;font-size:.85rem;min-width:4.6rem;}
+  .team-strip .who{font-family:'Barlow Condensed',sans-serif;font-weight:600;font-size:.85rem;min-width:5.5rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+  .pcells{display:flex;gap:.22rem;}
+  .pcell{width:1.35rem;height:1.35rem;border-radius:4px;display:flex;align-items:center;justify-content:center;
+    font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:.85rem;
+    background:rgba(241,245,249,.06);border:1px solid rgba(241,245,249,.14);color:#5b6f68;}
+  .pcell.p0{color:#5b6f68;}
+  .pcell.p1{color:#F1F5F9;border-color:rgba(241,245,249,.35);}
+  .pcell.p2{background:var(--lime);border-color:var(--lime);color:#001814;}
+  .pcell.g4{width:1.7rem;}
+  .pcell.g4.some{color:#F1F5F9;border-color:rgba(241,245,249,.35);}
+  .pcell.g4.max{background:var(--lime);border-color:var(--lime);color:#001814;}
+  .strip-total{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:1.25rem;min-width:1.8rem;text-align:right;}
+  .team-strip.a .strip-total{color:var(--lime);}
+  .team-strip.b .strip-total{color:#C7D0CB;}
   .cat-athletes .side{display:block;}
   .cat-athletes .team-tag{color:#8AA398;font-weight:700;margin-right:.4rem;}
   .cat-stage{font-family:'Bebas Neue',sans-serif;font-size:1.3rem;}
@@ -102,6 +119,7 @@
   const groupedB = <%- JSON.stringify(groupedB) %>;
   const categoryLabel = <%- JSON.stringify(categoryLabel) %>;
   const fixture = { team_a_id: <%= fixture.team_a_id %>, team_b_id: <%= fixture.team_b_id %>, team_a_name: <%- JSON.stringify(fixture.team_a_name) %>, team_b_name: <%- JSON.stringify(fixture.team_b_name) %> };
+  const TEAM_A_ID = fixture.team_a_id, TEAM_B_ID = fixture.team_b_id;
 
   const categoryOrder = ['womens_singles','womens_doubles','mixed_doubles','mens_doubles','mens_singles'];
   const OFFSET_SEC = 5 * 60;
@@ -123,6 +141,8 @@
   // counting UP until the operator pauses/resets — no fixed 15-minute block.
   const GATES123_SEC = STAGES.reduce((s,x) => s+x.seconds, 0);
   const GATE4_NAME = `Gate 4: Sprint Finish (${gate4Exercises.map(e=>e.name).join(' → ')})`;
+  // the 9 timed exercises in event order — one point-cell each, then a G4 cell
+  const CELL_EXERCISE_IDS = gates123.flatMap(g => exercises.filter(e => e.gate_id === g.id).map(e => e.id));
 
   let serverElapsed = 0, serverRunning = false, lastPollTime = Date.now();
 
@@ -138,10 +158,12 @@
 
   // Running match totals flanking the clock — same data feed as the public
   // Watch page, polled every 3 seconds.
+  let liveScores = {};
   async function pollTotals(){
     try {
       const res = await fetch(`/api/fixture/${FIXTURE_ID}/live-scores`);
       const scores = await res.json();
+      liveScores = scores || {};
       if (scores && scores._totals) {
         document.getElementById('totalA').textContent = scores._totals[fixture.team_a_id] || 0;
         document.getElementById('totalB').textContent = scores._totals[fixture.team_b_id] || 0;
@@ -197,9 +219,34 @@
         stageName = STAGES[stageIdx].name;
         remaining = fmt(STAGES[stageIdx].seconds - (elapsed-cum));
       }
+      const stripFor = (teamId, tag, names, cls) => {
+        const key = `${teamId}_${cat}`;
+        const rows = liveScores[key] || [];
+        const byEx = {}; let g4pts = null; let total = 0;
+        for (const r of rows) {
+          total += (r.points || 0);
+          if (r.exercise_id === 'gate4') g4pts = r.points || 0; else byEx[r.exercise_id] = r.points;
+        }
+        const cells = CELL_EXERCISE_IDS.map(id => {
+          const p = byEx[id];
+          if (p === undefined) return `<span class="pcell"></span>`;
+          return `<span class="pcell p${p}">${p}</span>`;
+        }).join('');
+        const g4cell = g4pts === null ? `<span class="pcell g4"></span>`
+          : `<span class="pcell g4 ${g4pts >= 6 ? 'max' : (g4pts > 0 ? 'some' : '')}">${g4pts}</span>`;
+        return `<div class="team-strip ${cls}">
+            <span class="team-tag">${tag}:</span><span class="who">${names}</span>
+            <span class="pcells">${cells}${g4cell}</span>
+            <span class="strip-total">${total}</span>
+          </div>`;
+      };
+
       return `<div class="cat-row ${rowClass}">
           <div class="cat-name">${categoryLabel[cat]}</div>
-          <div class="cat-athletes">${athletesHtml}</div>
+          <div class="cat-strips">
+            ${stripFor(TEAM_A_ID, fixture.team_a_name, namesA, 'a')}
+            ${stripFor(TEAM_B_ID, fixture.team_b_name, namesB, 'b')}
+          </div>
           <div class="cat-stage"><span class="stagelabel">${stageLabel}</span>${stageName}</div>
           <div class="cat-remaining">${remaining}</div>
         </div>`;
