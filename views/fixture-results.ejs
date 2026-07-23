@@ -6,7 +6,7 @@
     <p class="lede">Enter each category's result — for Singles that's the one athlete's number; for Doubles/Mixed, enter the pair's single combined performance (total reps counted for the pair), exactly as called on the day. Points are calculated automatically: benchmark hit, and margin over the same category on the opposing team.</p>
 
     <form method="POST" action="/fixture/<%= fixture.id %>/results">
-      <% const categories = ['mens_singles','womens_singles','mens_doubles','womens_doubles','mixed_doubles']; %>
+      <% const categories = ['womens_singles','womens_doubles','mixed_doubles','mens_doubles','mens_singles']; %>
 
       <% gates.forEach(gate => { %>
         <% const gateExercises = exercises.filter(e => e.gate_id === gate.id); %>

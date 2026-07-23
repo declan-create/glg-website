@@ -24,16 +24,14 @@ const db = require('./db');
  *   +3 points for completing all 3 exercises
  *   +3 additional points for being the fastest category-vs-category (winner-take-all)
  *
- * DOUBLES/MIXED BENCHMARK ASSUMPTION (flagged for Declan to confirm):
- * Since two athletes contribute to one combined number, the benchmark for a
- * doubles category is the sum of the two individual benchmarks that make up
- * the pair:
- *   - Men's Doubles   = benchmark_m + benchmark_m (2x men's individual benchmark)
- *   - Women's Doubles = benchmark_w + benchmark_w (2x women's individual benchmark)
- *   - Mixed Doubles   = benchmark_m + benchmark_w (one of each)
- * This is a reasonable default, not yet confirmed against an official ruling —
- * flag clearly to Declan before the first real season, easy to adjust in one place
- * (see benchmarkForCategory below).
+ * DOUBLES/MIXED BENCHMARKS (confirmed by Declan, 23 Jul 2026):
+ * Benchmarks are IDENTICAL regardless of singles or doubles — a pair still puts
+ * up one combined score, but it's judged against the same benchmark as a
+ * single. No summing of individual benchmarks.
+ *   - Men's Doubles   = benchmark_m (same as Men's Singles)
+ *   - Women's Doubles = benchmark_w (same as Women's Singles)
+ *   - Mixed Doubles   = midpoint of benchmark_m and benchmark_w where they
+ *     differ (only the Assault Bike does) — PROVISIONAL, confirm with Declan.
  */
 
 const CATEGORIES = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles'];
@@ -45,9 +43,9 @@ function benchmarkForCategory(exercise, category) {
   switch (category) {
     case 'mens_singles': return m;
     case 'womens_singles': return w;
-    case 'mens_doubles': return m * 2;
-    case 'womens_doubles': return w * 2;
-    case 'mixed_doubles': return m + w;
+    case 'mens_doubles': return m;
+    case 'womens_doubles': return w;
+    case 'mixed_doubles': return (m + w) / 2; // equals the single benchmark wherever m === w
     default: return null;
   }
 }

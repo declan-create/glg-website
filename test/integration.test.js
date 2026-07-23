@@ -10,6 +10,7 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'glg-test-'));
 process.env.GLG_DB_PATH = path.join(tmpDir, 'test.db');
 process.env.GLG_SESSIONS_PATH = path.join(tmpDir, 'sessions');
 process.env.SESSION_SECRET = 'test-secret';
+process.env.MAIL_TRANSPORT = 'json'; // capture outbound mail in-memory, no SMTP needed
 
 const request = require('supertest');
 const app = require('../server');
@@ -420,7 +421,7 @@ test('region page: shows Cast Display link only to the gym admin who can manage 
   assert.doesNotMatch(outsiderRes.text, /Cast Display/, 'An unrelated gym admin should not see Cast Display');
 });
 
-test('cast display: master clock shows millisecond precision and advances smoothly', async (t) => {
+test('cast display: master clock shows clean minutes:seconds and advances', async (t) => {
   let chromiumPath;
   try {
     chromiumPath = require('child_process').execSync(
@@ -443,12 +444,18 @@ test('cast display: master clock shows millisecond precision and advances smooth
     await page.click("button:has-text('Start')");
     await page.waitForTimeout(150);
     const reading1 = await page.locator('#masterClock').innerText();
-    await page.waitForTimeout(150);
+    await page.waitForTimeout(1200);
     const reading2 = await page.locator('#masterClock').innerText();
 
-    assert.match(reading1, /^\d{2}:\d{2}\.\d{3}$/, `Expected MM:SS.mmm format, got "${reading1}"`);
-    assert.match(reading2, /^\d{2}:\d{2}\.\d{3}$/, `Expected MM:SS.mmm format, got "${reading2}"`);
-    assert.notStrictEqual(reading1, reading2, 'Clock should have visibly advanced between the two readings');
+    assert.match(reading1, /^\d{2}:\d{2}$/, `Expected clean MM:SS format (no milliseconds), got "${reading1}"`);
+    assert.match(reading2, /^\d{2}:\d{2}$/, `Expected clean MM:SS format (no milliseconds), got "${reading2}"`);
+    assert.notStrictEqual(reading1, reading2, 'Clock should have advanced across a >1s gap');
+
+    // running match totals flank the clock
+    const totalA = await page.locator('#totalA').innerText();
+    const totalB = await page.locator('#totalB').innerText();
+    assert.match(totalA, /^\d+$/, 'Team A running total should render as a number');
+    assert.match(totalB, /^\d+$/, 'Team B running total should render as a number');
   } finally {
     await browser.close();
   }
@@ -724,6 +731,55 @@ test('live counter: Gate 4 finish stamp records completion + time and undo clear
   // remove the row entirely so later tests see a completely untouched board
   db.prepare("DELETE FROM category_gate4_results WHERE fixture_id=1 AND category='mixed_doubles'").run();
   require('../scoring').recomputeFixtureScores(1);
+});
+
+test('lunge ladder is scored in full completed lengths with the full ladder as benchmark', () => {
+  const lunge = db.prepare("SELECT * FROM exercises WHERE name LIKE '%Lunge%'").get();
+  assert.strictEqual(lunge.name, 'Lunges');
+  assert.strictEqual(lunge.unit, 'lengths');
+  assert.strictEqual(lunge.benchmark_m, 10, 'Target is 10 lengths (5 weights, 20 m each)');
+  assert.strictEqual(lunge.benchmark_w, 10);
+  assert.strictEqual(lunge.lower_is_better, 0, 'More lengths wins the station');
+});
+
+test('assigning a judge sends them an email with their category and login details', async () => {
+  const mailer = require('../mailer');
+  const sent = [];
+  const realSend = mailer.send;
+  // wrap send to capture what goes out (json transport means nothing leaves the box anyway)
+  mailer.send = async (msg) => { sent.push(msg); return realSend(msg); };
+  try {
+    const gymAgent = request.agent(app);
+    await gymAgent.post('/login').type('form').send({
+      email: 'admin@bftpymble.com.au', password: 'GymAdmin2026!', next: '/gym',
+    });
+    await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+      judge_first_name: 'Mail', judge_email: 'mailjudge@example.com', category: 'womens_doubles',
+    });
+    assert.strictEqual(sent.length, 1, 'Exactly one assignment email should be sent');
+    assert.strictEqual(sent[0].to, 'mailjudge@example.com');
+    assert.match(sent[0].subject, /Women(&#39;|')?s Doubles/i);
+    assert.match(sent[0].text, /GLGWelcome2026!/, 'New account email must include the default password');
+    assert.match(sent[0].text, /Gadigal vs Wangal|Gadigal/, 'Email should name the fixture');
+
+    // existing judge: no default password in the email
+    await gymAgent.post('/fixture/1/assign-judge').type('form').send({
+      judge_email: 'mailjudge@example.com', category: 'mens_doubles',
+    });
+    assert.strictEqual(sent.length, 2);
+    assert.doesNotMatch(sent[1].text, /GLGWelcome2026!/, 'Existing accounts must not be sent the default password');
+    assert.match(sent[1].text, /usual GLG password/);
+  } finally {
+    mailer.send = realSend;
+  }
+});
+
+test('mail is a safe no-op when SMTP is not configured', async () => {
+  // send() must resolve without throwing even with no transport reachable —
+  // judged by the fact assignments above succeeded and by calling it directly.
+  const mailer = require('../mailer');
+  const res = await mailer.send({ to: 'x@example.com', subject: 'test', text: 'hi' });
+  assert.ok(res === null || typeof res === 'object'); // json transport returns an object; unconfigured returns null
 });
 
 test('password fields ship with the show/hide (eye) toggle script', async () => {

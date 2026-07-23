@@ -2,6 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const bcrypt = require('bcryptjs');
+const mailer = require('./mailer');
 const path = require('path');
 const expressLayouts = require('express-ejs-layouts');
 const helmet = require('helmet');
@@ -698,7 +699,9 @@ app.post('/fixture/:id/results', requireLogin, (req, res) => {
 
 // ---- Judge assignment (gym admin / GLG admin assigns a judge to a category for a fixture) ----
 app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
-  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=?").get(req.params.id);
+  const fixture = db.prepare(`
+    SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+    JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.id=?`).get(req.params.id);
   if (!fixture || !canManageFixture(req.session.user, fixture)) {
     return res.status(403).render('error', { title: 'Access Denied', message: "You can only assign judges for your own gym's fixtures." });
   }
@@ -713,6 +716,7 @@ app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
   }
 
   let judge = db.prepare("SELECT * FROM users WHERE email=?").get(email);
+  let wasNewAccount = false;
   if (judge && judge.role !== 'judge') {
     // that email belongs to someone else's account (athlete, gym admin, etc.) — don't silently repurpose it
     return res.redirect(`/fixture/${fixture.id}/results?judgeError=notjudge`);
@@ -728,10 +732,21 @@ app.post('/fixture/:id/assign-judge', requireLogin, (req, res) => {
     const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,phone) VALUES (?,?,?,?,?,?)")
       .run(email, hash, 'judge', judge_first_name.trim(), (judge_last_name || '').trim(), (judge_phone || '').trim() || null).lastInsertRowid;
     judge = db.prepare("SELECT * FROM users WHERE id=?").get(uid);
+    wasNewAccount = true;
   }
 
   db.prepare("INSERT OR IGNORE INTO judge_assignments (user_id, fixture_id, category) VALUES (?,?,?)")
     .run(judge.id, fixture.id, category);
+
+  // Email the judge their assignment + login details (fire-and-forget; the
+  // assignment stands even if mail is down or not configured yet).
+  mailer.send(mailer.judgeAssignmentEmail({
+    judge,
+    category_label: CATEGORY_LABEL[category],
+    fixture,
+    isNewAccount: wasNewAccount,
+    defaultPassword: 'GLGWelcome2026!',
+  }));
   res.redirect(`/fixture/${fixture.id}/results?judgeAssigned=1`);
 });
 
@@ -844,7 +859,7 @@ app.get('/judge/fixture/:fixtureId/category/:category/live', requireLogin, requi
     g4Map[r.team_id] = { completed: r.completed, total_time_sec: r.total_time_sec, points: r.points };
   }
 
-  const CATEGORY_ORDER = ['mens_singles','womens_singles','mens_doubles','womens_doubles','mixed_doubles'];
+  const CATEGORY_ORDER = ['womens_singles','womens_doubles','mixed_doubles','mens_doubles','mens_singles'];
 
   res.render('judge-live', {
     title: `Live — ${CATEGORY_LABEL[category]}`, layout: false,
@@ -942,6 +957,10 @@ function liveScoresFor(fixtureId) {
   const byKey = {};
   for (const r of rows) (byKey[`${r.team_id}_${r.category}`] ||= []).push({ exercise_id: r.exercise_id, points: r.points, raw_value: r.raw_value });
   for (const r of g4rows) (byKey[`${r.team_id}_${r.category}`] ||= []).push({ exercise_id: 'gate4', points: r.points, completed: r.completed });
+  // Accumulated whole-match totals per team — shown flanking the master clock.
+  const totals = {};
+  for (const r of [...rows, ...g4rows]) totals[r.team_id] = (totals[r.team_id] || 0) + (r.points || 0);
+  byKey._totals = totals;
   return byKey;
 }
 

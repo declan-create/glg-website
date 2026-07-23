@@ -25,6 +25,12 @@
   .master-clock{font-family:'Roboto Mono',monospace;font-weight:700;font-size:clamp(2.2rem, 9vw, 5rem);letter-spacing:.02em;}
   .master-clock.finished{color:var(--lime);}
   .clock-label{font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:.14em;color:#8AA398;font-size:.85rem;text-align:center;margin-bottom:.3rem;}
+  .clock-flank{display:flex;align-items:center;justify-content:center;gap:clamp(1.2rem,5vw,3.5rem);}
+  .team-total{text-align:center;min-width:5.5rem;}
+  .tt-name{font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:#8AA398;font-size:.9rem;}
+  .tt-pts{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:clamp(2rem,7vw,4rem);line-height:1;}
+  .team-total.a .tt-pts{color:var(--lime);}
+  .team-total.b .tt-pts{color:#C7D0CB;}
   .clock-controls{display:flex;gap:.6rem;}
   .clock-controls button{background:rgba(241,245,249,.1);color:var(--white);border:1px solid rgba(241,245,249,.2);
     padding:.7rem 1.4rem;border-radius:8px;font-family:'Barlow Condensed',sans-serif;font-weight:700;
@@ -66,7 +72,11 @@
   <div class="clock-row">
     <div>
       <div class="clock-label">FULL EVENT — GATES 1–4</div>
-      <div class="master-clock" id="masterClock">00:00</div>
+      <div class="clock-flank">
+        <div class="team-total a"><div class="tt-name"><%= fixture.team_a_name %></div><div class="tt-pts" id="totalA">0</div></div>
+        <div class="master-clock" id="masterClock">00:00</div>
+        <div class="team-total b"><div class="tt-name"><%= fixture.team_b_name %></div><div class="tt-pts" id="totalB">0</div></div>
+      </div>
     </div>
     <div class="clock-controls">
       <button onclick="startClock()">Start</button>
@@ -91,9 +101,9 @@
   const groupedA = <%- JSON.stringify(groupedA) %>;
   const groupedB = <%- JSON.stringify(groupedB) %>;
   const categoryLabel = <%- JSON.stringify(categoryLabel) %>;
-  const fixture = { team_a_name: <%- JSON.stringify(fixture.team_a_name) %>, team_b_name: <%- JSON.stringify(fixture.team_b_name) %> };
+  const fixture = { team_a_id: <%= fixture.team_a_id %>, team_b_id: <%= fixture.team_b_id %>, team_a_name: <%- JSON.stringify(fixture.team_a_name) %>, team_b_name: <%- JSON.stringify(fixture.team_b_name) %> };
 
-  const categoryOrder = ['mens_singles','womens_singles','mens_doubles','womens_doubles','mixed_doubles'];
+  const categoryOrder = ['womens_singles','womens_doubles','mixed_doubles','mens_doubles','mens_singles'];
   const OFFSET_SEC = 5 * 60;
   const STAGE_SEC = 5 * 60;
   const CLOCK_MODE = 'full_event'; // one continuous clock for the whole fixture
@@ -126,6 +136,20 @@
     return m+':'+s+'.'+ms;
   }
 
+  // Running match totals flanking the clock — same data feed as the public
+  // Watch page, polled every 3 seconds.
+  async function pollTotals(){
+    try {
+      const res = await fetch(`/api/fixture/${FIXTURE_ID}/live-scores`);
+      const scores = await res.json();
+      if (scores && scores._totals) {
+        document.getElementById('totalA').textContent = scores._totals[fixture.team_a_id] || 0;
+        document.getElementById('totalB').textContent = scores._totals[fixture.team_b_id] || 0;
+      }
+    } catch (e) {}
+  }
+  pollTotals(); setInterval(pollTotals, 3000);
+
   async function pollClock(){
     try {
       const res = await fetch(`/api/fixture/${FIXTURE_ID}/clock/${CLOCK_MODE}`);
@@ -148,7 +172,7 @@
     const masterSeconds = currentDisplaySeconds();
 
     const clockEl = document.getElementById('masterClock');
-    clockEl.textContent = fmt(masterSeconds, true);
+    clockEl.textContent = fmt(masterSeconds);
 
     document.getElementById('catGrid').innerHTML = categoryOrder.map((cat, i) => {
       const offset = i * OFFSET_SEC;
@@ -163,7 +187,7 @@
         rowClass='is-live';
         stageLabel = 'Sprint time (counting up)';
         stageName = GATE4_NAME;
-        remaining = fmt(elapsed - GATES123_SEC, true);
+        remaining = fmt(elapsed - GATES123_SEC);
       }
       else {
         rowClass='is-live';
@@ -171,7 +195,7 @@
         for (let s=0;s<STAGES.length;s++){ if (elapsed<cum+STAGES[s].seconds){stageIdx=s;break;} cum+=STAGES[s].seconds; }
         stageLabel = `Stage ${stageIdx+1} of ${STAGES.length+1}`;
         stageName = STAGES[stageIdx].name;
-        remaining = fmt(STAGES[stageIdx].seconds - (elapsed-cum), true);
+        remaining = fmt(STAGES[stageIdx].seconds - (elapsed-cum));
       }
       return `<div class="cat-row ${rowClass}">
           <div class="cat-name">${categoryLabel[cat]}</div>

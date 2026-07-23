@@ -247,7 +247,7 @@
     const ex = timed[idx];
     nameEl.textContent = `Gate ${ex.gate_number} · ${ex.name}`;
     benchEl.textContent = ex.benchmark_desc || '';
-    if (ex.unit === 'reps') {
+    if (ex.unit === 'reps' || ex.unit === 'lengths') { // lengths tap-count just like reps
       main.innerHTML = zoneHtml(TEAM_A, ex) + zoneHtml(TEAM_B, ex);
       wireTaps(ex);
     } else {

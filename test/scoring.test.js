@@ -8,15 +8,15 @@ test('benchmarkForCategory: singles use individual benchmark directly', () => {
   assert.strictEqual(benchmarkForCategory(ex, 'womens_singles'), 20);
 });
 
-test('benchmarkForCategory: doubles sum two of the same gender', () => {
+test('benchmarkForCategory: doubles use the SAME benchmark as singles (no summing)', () => {
   const ex = { benchmark_m: 30, benchmark_w: 20 };
-  assert.strictEqual(benchmarkForCategory(ex, 'mens_doubles'), 60);
-  assert.strictEqual(benchmarkForCategory(ex, 'womens_doubles'), 40);
+  assert.strictEqual(benchmarkForCategory(ex, 'mens_doubles'), 30);
+  assert.strictEqual(benchmarkForCategory(ex, 'womens_doubles'), 20);
 });
 
-test('benchmarkForCategory: mixed doubles sums one of each', () => {
-  const ex = { benchmark_m: 30, benchmark_w: 20 };
-  assert.strictEqual(benchmarkForCategory(ex, 'mixed_doubles'), 50);
+test('benchmarkForCategory: mixed doubles takes the midpoint where m/w differ, the shared value where equal', () => {
+  assert.strictEqual(benchmarkForCategory({ benchmark_m: 80, benchmark_w: 50 }, 'mixed_doubles'), 65);
+  assert.strictEqual(benchmarkForCategory({ benchmark_m: 30, benchmark_w: 30 }, 'mixed_doubles'), 30);
 });
 
 test('benchmarkForCategory: returns null when exercise has no per-gender benchmark (Gate 4 style)', () => {
@@ -49,13 +49,13 @@ test('scoreExercise: no opponent category result yet — no crash, no bonus poin
   assert.deepStrictEqual(r, { benchmarkMet: 1, beatOpponent: 0, points: 1 });
 });
 
-test('scoreExercise: doubles pair combined value against doubles benchmark', () => {
-  // Men's Doubles benchmark = 60 (2x30). Pair scores 62 combined, opposing pair scores 58.
-  const benchmark = 60;
-  const home = scoreExercise({ raw: 62, opponentRaw: 58, benchmark, lowerIsBetter: false });
-  const away = scoreExercise({ raw: 58, opponentRaw: 62, benchmark, lowerIsBetter: false });
+test('scoreExercise: doubles pair combined value against the SAME benchmark as singles', () => {
+  // Benchmark 30 for singles AND doubles. Pair scores 62 combined, opposing pair 28.
+  const benchmark = 30;
+  const home = scoreExercise({ raw: 62, opponentRaw: 28, benchmark, lowerIsBetter: false });
+  const away = scoreExercise({ raw: 28, opponentRaw: 62, benchmark, lowerIsBetter: false });
   assert.strictEqual(home.points, 2); // met benchmark + beat opponent
-  assert.strictEqual(away.points, 0); // 58 < 60, fails the doubles benchmark despite being close
+  assert.strictEqual(away.points, 0); // 28 < 30 — benchmark missed, win bonus hard-zeroed
 });
 
 test('scoreGate4: completed and fastest = 6pts', () => {
