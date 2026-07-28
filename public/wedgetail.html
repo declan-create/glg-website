@@ -412,9 +412,20 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     document.getElementById('goBtn').disabled = false;
     loop();
   } catch (e){
-    alert('Camera/model failed to start: ' + e.message +
-      '\n\nIf you opened this file directly (file://), most browsers block camera access — ' +
-      'try running it from a local server instead (e.g. "python3 -m http.server" in its folder, then open http://localhost:8000/).');
+    let hint;
+    if (location.protocol === 'file:') {
+      hint = 'You opened this as a local file — most browsers block camera access from file:// pages. ' +
+        'Try running it from a local server instead (e.g. "python3 -m http.server" in its folder, then open http://localhost:8000/), ' +
+        'or just use the hosted version at gymleagueglobal.com.au/wedgetail.html.';
+    } else if (/tf is not defined|poseDetection is not defined/i.test(e.message)) {
+      hint = 'The tracking library didn\'t load — usually a blocked or slow connection to cdn.jsdelivr.net. ' +
+        'Check your connection and reload. If it keeps happening on this network, try a different WiFi or mobile data.';
+    } else if (e.name === 'NotAllowedError') {
+      hint = 'Camera permission was denied. Check your browser\'s site settings and allow camera access for this page, then reload.';
+    } else {
+      hint = 'Reload the page and try again. If it keeps failing, note the exact error above.';
+    }
+    alert('Camera/model failed to start: ' + e.message + '\n\n' + hint);
     btn.disabled = false; btn.textContent = 'Start Camera';
   }
 });

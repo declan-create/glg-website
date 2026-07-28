@@ -19,13 +19,17 @@ app.use(helmet({
   contentSecurityPolicy: {
     directives: {
       defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'", "'unsafe-inline'"],
+      styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+      // cdn.jsdelivr.net serves TensorFlow.js + pose-detection for the
+      // Wedgetail prototype (public/wedgetail.html) — everything else on the
+      // site is same-origin, this is the one deliberate external script source.
+      scriptSrc: ["'self'", "'unsafe-inline'", "https://cdn.jsdelivr.net"],
       scriptSrcAttr: ["'unsafe-inline'"], // allows onclick/onchange/onsubmit attributes used throughout the views —
                                           // helmet blocks these by default even when scriptSrc allows inline <script> tags,
                                           // which silently broke every button on the Cast Display and several other pages.
       imgSrc: ["'self'", "data:"],
-      fontSrc: ["'self'"],
+      fontSrc: ["'self'", "https://fonts.gstatic.com"],
+      connectSrc: ["'self'", "https://cdn.jsdelivr.net"], // tfjs fetches its model weights at runtime, not just the script itself
     },
   },
 }));
