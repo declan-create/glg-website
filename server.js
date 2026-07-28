@@ -29,7 +29,7 @@ app.use(helmet({
                                           // which silently broke every button on the Cast Display and several other pages.
       imgSrc: ["'self'", "data:"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
-      connectSrc: ["'self'", "https://cdn.jsdelivr.net"], // tfjs fetches its model weights at runtime, not just the script itself
+      connectSrc: ["'self'", "https://cdn.jsdelivr.net", "https://tfhub.dev", "https://storage.googleapis.com", "https://www.kaggle.com", "https://kaggle.com"], // tfjs-core loads the actual MoveNet model weights from TF Hub/Kaggle Models at runtime, not from jsdelivr — the script tag is only the library code
     },
   },
 }));
