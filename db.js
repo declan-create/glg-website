@@ -348,4 +348,24 @@ function seed() {
 
 seed();
 
+// Storage diagnostics — lets the app show whether it's running on a
+// persistent volume or on the ephemeral copy bundled with the code.
+// db_meta survives only if the database file itself survives, so
+// first_boot_at is hard proof: if it changes after a deploy, data was lost.
+db.exec(`CREATE TABLE IF NOT EXISTS db_meta (key TEXT PRIMARY KEY, value TEXT);`);
+db.prepare("INSERT OR IGNORE INTO db_meta (key,value) VALUES ('first_boot_at', ?)").run(new Date().toISOString());
+
+db.storageInfo = () => {
+  const usingEnvPath = !!process.env.GLG_DB_PATH;
+  const insideRepo = path.dirname(dbPath) === __dirname;
+  const row = db.prepare("SELECT value FROM db_meta WHERE key='first_boot_at'").get();
+  return {
+    dbPath,
+    usingEnvPath,
+    // The bundled file ships with the code, so it is replaced on every deploy.
+    persistent: usingEnvPath && !insideRepo,
+    firstBootAt: row ? row.value : null,
+  };
+};
+
 module.exports = db;

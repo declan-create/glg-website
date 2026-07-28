@@ -1056,7 +1056,7 @@ app.get('/admin', requireLogin, requireRole('admin'), (req, res) => {
   };
   const pendingOperators = db.prepare("SELECT * FROM users WHERE role='league_operator' AND approved=0").all();
   const regions = db.prepare("SELECT * FROM regions ORDER BY level, name").all();
-  res.render('admin-dashboard', { title: 'GLG Admin', stats, pendingOperators, regions });
+  res.render('admin-dashboard', { title: 'GLG Admin', stats, pendingOperators, regions, storage: db.storageInfo() });
 });
 
 app.post('/admin/operators/:id/approve', requireLogin, requireRole('admin'), (req, res) => {

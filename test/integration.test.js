@@ -821,6 +821,23 @@ test('clear results: a judge cannot clear a fixture', async () => {
   assert.strictEqual(res.status, 403);
 });
 
+test('storage diagnostics: admin dashboard reports whether data survives deploys', async () => {
+  const agent = request.agent(app);
+  await agent.post('/login').type('form').send({
+    email: 'declan@gymleagueglobal.com.au', password: 'GLGadmin2026!', next: '/admin',
+  });
+  const res = await agent.get('/admin');
+  assert.strictEqual(res.status, 200);
+  assert.match(res.text, /Data Storage/);
+  assert.match(res.text, /This database was created/);
+  // tests run with GLG_DB_PATH set to a temp dir outside the repo -> reported persistent
+  assert.match(res.text, /Persistent — data survives deploys/);
+
+  const info = db.storageInfo();
+  assert.ok(info.firstBootAt, 'A first-boot timestamp must be recorded for deploy comparison');
+  assert.strictEqual(info.persistent, true);
+});
+
 test('password fields ship with the show/hide (eye) toggle script', async () => {
   const res = await request(app).get('/login');
   assert.strictEqual(res.status, 200);
