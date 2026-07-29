@@ -11,6 +11,11 @@ const db = require('./db');
 const scoring = require('./scoring');
 
 const app = express();
+// Railway sits the app behind a reverse proxy — without this, Express ignores
+// the X-Forwarded-For header, so express-rate-limit can't tell visitors apart
+// by IP (everyone looks like one client, or none get identified correctly).
+// '1' = trust exactly one hop (Railway's own proxy), not an open-ended chain.
+app.set('trust proxy', 1);
 const PORT = process.env.PORT || 3000;
 
 // Security headers. CSP relaxed for inline styles/scripts used throughout the
