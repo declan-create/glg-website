@@ -73,9 +73,11 @@
 <header>
   <span class="badge">Prototype — needs venue testing before live use</span>
   <h1>GLG Camera Rep Counter</h1>
-  <p>One camera, two independent tracking zones. Pose estimation counts reps automatically off a hip–knee angle cycle
-     (squat / deadlift movement pattern); the judge's only job is to hit <b style="color:var(--off)">NO REP</b> to knock off a rep that
-     shouldn't have counted. Everything runs in this browser tab — no video is uploaded anywhere.</p>
+  <p>One camera, two independent tracking zones — each one automatically finds and follows its athlete, so you
+     don't need to nail an exact camera position. Pose estimation counts reps off a hip–knee angle cycle (squat /
+     deadlift movement pattern), <b style="color:var(--off)">deliberately generously</b> — the count is meant to be
+     crude and fast, not a form judge. All quality control lives with the coach, made live via
+     <b style="color:var(--off)">NO REP</b>. Everything runs in this browser tab — no video is uploaded anywhere.</p>
 </header>
 
 <div class="controls">
@@ -92,15 +94,15 @@
   </div>
   <div class="field" id="bottomAngleField">
     <label>Bottom angle (° at knee)</label>
-    <input id="bottomAngle" type="number" value="110" min="60" max="160" />
+    <input id="bottomAngle" type="number" value="135" min="60" max="160" />
   </div>
   <div class="field" id="floorToleranceField" style="display:none;">
     <label>Floor tolerance (px)</label>
-    <input id="floorTolerance" type="number" value="25" min="5" max="80" />
+    <input id="floorTolerance" type="number" value="45" min="5" max="80" />
   </div>
   <div class="field">
     <label>Lockout angle (° at knee)</label>
-    <input id="topAngle" type="number" value="165" min="120" max="180" />
+    <input id="topAngle" type="number" value="150" min="120" max="180" />
   </div>
   <div class="field">
     <label>Camera</label>
@@ -209,9 +211,11 @@ class Lane {
     this.reps = 0;
     this.atBottom = false;
     this.crop = null; // {sx, sw} — which half of the source video this lane reads
-    this.floorRefY = null; // calibrated wrist-height reference for "weight on floor"
-    this.lastWrist = null; // most recent {x,y,score} for the tracked wrist, used by calibration
+    this.floorRefY = null; // calibrated wrist-height reference for "weight on floor" (in FIELD space — see grabFrame)
+    this.lastWrist = null; // most recent {x,y,score} for the tracked wrist, in FIELD space
     this.armed = false; // camera can be live/framing without counting — counting only starts once the judge taps GO
+    this.view = null; // {x,y,w,h} — the auto-tracking crop window within this lane's raw half-frame, in raw pixels
+    this.rawHalf = {sw:0, sh:0}; // this lane's full half-frame size, in raw video pixels
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
@@ -223,23 +227,71 @@ class Lane {
     });
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.countEl.textContent = 0; }
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.countEl.textContent = 0; }
 
-  // Grabs this lane's half of the shared video into its own canvas at full
-  // detector resolution, so each lane runs an independent SINGLE-person
-  // pose estimate rather than one shared multi-person call — far more
-  // reliable, and the same technique proven single-athlete squat-depth
-  // apps already use.
+  // Grabs this lane's half of the shared video — but rather than a rigid
+  // static crop, each lane maintains its own "view window" that smoothly
+  // zooms and pans to follow wherever the athlete actually is standing.
+  // The judge/athlete no longer has to hit an exact mark; the software
+  // finds them within their half of frame and keeps them centred.
   grabFrame(video){
     const vw = video.videoWidth, vh = video.videoHeight;
     if (!vw) return null;
-    const sw = vw/2;
+    const sw = vw/2, sh = vh;
     const sx = this.crop === 'right' ? sw : 0;
-    if (this.canvas.width !== sw || this.canvas.height !== vh){
-      this.canvas.width = sw; this.canvas.height = vh;
+    this.rawHalf = {sw, sh};
+    if (!this.view) this.view = {x:0, y:0, w:sw, h:sh}; // start seeing the whole half, so it can find someone anywhere in it
+
+    const CANVAS_W = 480, CANVAS_H = 640; // fixed working resolution regardless of zoom level — keeps the detector input consistent
+    if (this.canvas.width !== CANVAS_W || this.canvas.height !== CANVAS_H){
+      this.canvas.width = CANVAS_W; this.canvas.height = CANVAS_H;
     }
-    this.ctx.drawImage(video, sx, 0, sw, vh, 0, 0, sw, vh);
+    // draw video-space (sx+view.x, view.y, view.w, view.h) scaled up to fill the canvas
+    this.ctx.drawImage(video, sx+this.view.x, this.view.y, this.view.w, this.view.h, 0, 0, CANVAS_W, CANVAS_H);
     return this.canvas;
+  }
+
+  // Converts a keypoint from canvas pixel space (what the detector sees,
+  // which changes as the view window zooms) back into a stable coordinate
+  // system fixed to this lane's raw half-frame — so angle checks and the
+  // floor calibration keep meaning the same thing regardless of zoom.
+  toField(pt){
+    return {
+      x: this.view.x + (pt.x / this.canvas.width) * this.view.w,
+      y: this.view.y + (pt.y / this.canvas.height) * this.view.h,
+      score: pt.score,
+    };
+  }
+
+  // Nudges the view window toward a box that comfortably contains the
+  // detected athlete, padded generously so normal movement doesn't fall
+  // out of frame, smoothed so it drifts rather than jumps.
+  followAthlete(fieldKp){
+    const pts = ['left_shoulder','right_shoulder','left_hip','right_hip','left_knee','right_knee','left_ankle','right_ankle','left_wrist','right_wrist']
+      .map(n => fieldKp[n]).filter(p => p && p.score > 0.3);
+    if (pts.length < 3) return; // not enough signal to retarget this frame — hold the current window
+
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    for (const p of pts){ minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); }
+    const padX = (maxX-minX)*0.7 + 30, padY = (maxY-minY)*0.35 + 40; // generous — room to move without re-triggering a re-frame
+    let tx = minX-padX, ty = minY-padY, tw = (maxX-minX)+padX*2, th = (maxY-minY)+padY*2;
+
+    // Keep the same aspect ratio as the canvas (480:640) — otherwise the
+    // crop gets stretched to fill the canvas, which silently distorts every
+    // joint angle computed from it, not just the picture.
+    const CANVAS_ASPECT = 480/640;
+    if (tw/th > CANVAS_ASPECT){ const nh = tw/CANVAS_ASPECT; ty -= (nh-th)/2; th = nh; }
+    else { const nw = th*CANVAS_ASPECT; tx -= (nw-tw)/2; tw = nw; }
+
+    // keep the target within this lane's own half — never zoom into the neighbouring lane or off-frame
+    const {sw, sh} = this.rawHalf;
+    tw = Math.min(tw, sw); th = Math.min(th, sh);
+    tx = Math.max(0, Math.min(tx, sw-tw));
+    ty = Math.max(0, Math.min(ty, sh-th));
+
+    const L = 0.08; // lerp factor — smooth drift, not a snap, so tracking doesn't feel jittery
+    this.view.x += (tx-this.view.x)*L; this.view.y += (ty-this.view.y)*L;
+    this.view.w += (tw-this.view.w)*L; this.view.h += (th-this.view.h)*L;
   }
 
   async detect(detector, video){
@@ -251,9 +303,14 @@ class Lane {
       this.confEl.textContent = 'tracking: none'; this.confEl.classList.add('low');
       return;
     }
-    const kp = kpByName(poses[0].keypoints);
-    this.drawSkeleton(kp);
-    this.updateCount(kp);
+    const kpCanvas = kpByName(poses[0].keypoints); // canvas-space — for drawing the overlay only
+    this.drawSkeleton(kpCanvas);
+
+    const kpField = {}; // raw-half-frame space — for counting logic + view tracking, stable across zoom
+    for (const name of Object.keys(kpCanvas)) kpField[name] = this.toField(kpCanvas[name]);
+
+    this.followAthlete(kpField);
+    this.updateCount(kpField);
   }
 
   drawSkeleton(kp){
