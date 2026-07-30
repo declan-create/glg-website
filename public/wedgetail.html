@@ -53,6 +53,7 @@
   .video-wrap canvas{position:absolute;top:0;left:0;width:100%;height:100%;}
 
   .phase-strip{padding:.5rem 1rem;font-size:.85rem;font-weight:600;color:var(--slate);border-top:1px solid rgba(255,255,255,.08);}
+  .phase-strip.waiting{color:var(--amber);font-weight:800;font-size:.95rem;background:rgba(230,180,0,.08);}
   .phase-strip.hit{color:var(--lime);}
 
   .lane-foot{display:flex;align-items:center;justify-content:space-between;padding:.9rem 1rem;gap:.8rem;}
@@ -216,6 +217,7 @@ class Lane {
     this.armed = false; // camera can be live/framing without counting — counting only starts once the judge taps GO
     this.view = null; // {x,y,w,h} — the auto-tracking crop window within this lane's raw half-frame, in raw pixels
     this.rawHalf = {sw:0, sh:0}; // this lane's full half-frame size, in raw video pixels
+    this.lostSince = null; // timestamp tracking was last lost — drives the widen-and-search-again behaviour
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
@@ -227,7 +229,7 @@ class Lane {
     });
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.countEl.textContent = 0; }
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.countEl.textContent = 0; }
 
   // Grabs this lane's half of the shared video — but rather than a rigid
   // static crop, each lane maintains its own "view window" that smoothly
@@ -269,7 +271,23 @@ class Lane {
   followAthlete(fieldKp){
     const pts = ['left_shoulder','right_shoulder','left_hip','right_hip','left_knee','right_knee','left_ankle','right_ankle','left_wrist','right_wrist']
       .map(n => fieldKp[n]).filter(p => p && p.score > 0.3);
-    if (pts.length < 3) return; // not enough signal to retarget this frame — hold the current window
+
+    if (pts.length < 3) {
+      // Can't see the athlete well this frame. Don't just hold the current
+      // zoom forever — if this drags on (a Mixed Doubles partner stepping
+      // back, someone walking off to the next station), widen back toward
+      // the full half-frame so the camera can find whoever's actually
+      // there now, instead of staring at an empty patch of floor.
+      if (this.lostSince == null) this.lostSince = performance.now();
+      if (performance.now() - this.lostSince > 2000) {
+        const {sw, sh} = this.rawHalf;
+        const L = 0.05;
+        this.view.x += (0-this.view.x)*L; this.view.y += (0-this.view.y)*L;
+        this.view.w += (sw-this.view.w)*L; this.view.h += (sh-this.view.h)*L;
+      }
+      return;
+    }
+    this.lostSince = null; // tracking someone confidently again — cancel any search-widen in progress
 
     let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
     for (const p of pts){ minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); }
@@ -301,6 +319,7 @@ class Lane {
     this.ctx.drawImage(frame, 0, 0);
     if (!poses.length){
       this.confEl.textContent = 'tracking: none'; this.confEl.classList.add('low');
+      this.followAthlete({}); // nobody visible in the current crop at all — let it start widening to search again
       return;
     }
     const kpCanvas = kpByName(poses[0].keypoints); // canvas-space — for drawing the overlay only
@@ -360,10 +379,11 @@ class Lane {
     this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
 
     if (!this.armed){
-      this.phaseEl.textContent = 'camera live — framing/calibrating — waiting for "BOTH READY — GO"';
-      this.phaseEl.classList.remove('hit');
+      this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
       return; // skeleton + confidence still show, but the rep state machine doesn't run yet
     }
+    this.phaseEl.classList.remove('waiting');
 
     const TOP = CFG.topAngle();
     const mode = CFG.bottomMode();
@@ -418,6 +438,26 @@ laneA.crop = 'left'; laneB.crop = 'right';
 
 document.getElementById('resetBtn').addEventListener('click', () => { laneA.reset(); laneB.reset(); });
 
+// Remember whatever thresholds were last used on THIS device/browser, so a
+// judge who finds better numbers doesn't have to re-enter them next test —
+// and Declan doesn't need to ship a new default just to make it stick.
+// (Real hosted page, not a Claude artifact sandbox — localStorage is fine here.)
+const REMEMBERED_FIELDS = ['exerciseName','bottomMode','bottomAngle','topAngle','floorTolerance'];
+for (const id of REMEMBERED_FIELDS) {
+  const saved = localStorage.getItem('wedgetail_' + id);
+  if (saved !== null) document.getElementById(id).value = saved;
+  document.getElementById(id).addEventListener('change', (e) => {
+    localStorage.setItem('wedgetail_' + id, e.target.value);
+  });
+}
+// the mode dropdown needs its dependent fields (angle vs floor-tolerance) shown/hidden
+// correctly if a remembered value restores it to "floor" on page load
+if (document.getElementById('bottomMode').value === 'floor') {
+  document.getElementById('bottomAngleField').style.display = 'none';
+  document.getElementById('floorToleranceField').style.display = 'flex';
+  document.getElementById('calibrateBtn').style.display = 'inline-block';
+}
+
 document.getElementById('goBtn').addEventListener('click', () => {
   // Both lanes arm together — mirrors a synchronised start, not one athlete
   // getting a head start on the other.
@@ -451,13 +491,18 @@ populateCameras();
 
 document.getElementById('startBtn').addEventListener('click', async () => {
   const btn = document.getElementById('startBtn');
-  btn.disabled = true; btn.textContent = 'Loading model…';
+  btn.disabled = true; btn.textContent = 'Setting up…';
   try {
     await tf.setBackend('webgl');
+    // This step downloads the actual tracking model over the network (a few
+    // MB) — it's a real fetch, not a hang. Slower on mobile data or a
+    // congested venue WiFi than on a fast home/office connection.
+    btn.textContent = 'Downloading tracking model…';
     detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
       modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
     });
 
+    btn.textContent = 'Starting camera…';
     const deviceId = document.getElementById('cameraSelect').value;
     const constraints = { video: deviceId ? {deviceId:{exact:deviceId}} : {facingMode:'environment'}, audio:false };
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -487,9 +532,30 @@ document.getElementById('startBtn').addEventListener('click', async () => {
   }
 });
 
+let consecutiveErrors = 0;
+
 async function loop(){
   if (!running) return;
-  await Promise.all([laneA.detect(detector, video), laneB.detect(detector, video)]);
+  try {
+    // Sequential, not Promise.all — both lanes were calling estimatePoses()
+    // on the SAME detector at the same moment, which TF.js's WebGL backend
+    // does not guarantee is safe. That race was the likely cause of the
+    // freeze: one bad concurrent call throwing with nothing to catch it,
+    // silently killing the requestAnimationFrame chain for good.
+    await laneA.detect(detector, video);
+    await laneB.detect(detector, video);
+    consecutiveErrors = 0;
+  } catch (e) {
+    // Any single bad frame — WebGL hiccup, camera glitch, anything — now
+    // just skips that frame instead of freezing forever. The loop always
+    // keeps going.
+    consecutiveErrors++;
+    console.error('Wedgetail: frame skipped after an error', e);
+    if (consecutiveErrors === 5) {
+      laneA.phaseEl.textContent = laneB.phaseEl.textContent =
+        '⚠ repeated tracking errors — if this continues, reload the page';
+    }
+  }
   requestAnimationFrame(loop);
 }
 </script>
