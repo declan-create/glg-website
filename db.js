@@ -176,6 +176,42 @@ CREATE TABLE IF NOT EXISTS fixture_clocks (
   accumulated_seconds REAL DEFAULT 0, -- seconds banked from previous start/pause cycles
   UNIQUE(fixture_id, mode)
 );
+
+-- Self-service "forgot password" flow. We store a hash of the token, never
+-- the token itself — same reasoning as password_hash on users: if the DB
+-- ever leaks, a stored token would let someone reset accounts directly,
+-- a hash doesn't. One-time use (used_at set) and short-lived (expires_at).
+CREATE TABLE IF NOT EXISTS password_resets (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id),
+  token_hash TEXT NOT NULL,
+  expires_at TEXT NOT NULL,
+  used_at TEXT,
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Wedgetail session recordings. One row per recorded clip (one "set" from
+-- Both-Ready-Go through reset/next exercise) — a clip covers both lanes at
+-- once since they share a single camera frame. review_flags is a JSON array
+-- of {lane, rep, atSeconds, reason} built from the same per-rep angle data
+-- Wedgetail already computes live but, until now, never persisted — the
+-- live threshold stays crude on purpose (doc: "algorithm's only job is to
+-- keep the numbers flowing"), so flags mark reps worth a coach's second look
+-- without changing what counted live.
+CREATE TABLE IF NOT EXISTS recordings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  fixture_id INTEGER REFERENCES fixtures(id), -- nullable: Wedgetail can be used stand-alone, outside a scored fixture
+  exercise_name TEXT NOT NULL,
+  mode TEXT NOT NULL, -- 'angle' | 'floor'
+  lane_a_label TEXT, -- team/athlete tag shown in that lane at record time, e.g. "GADIGAL"
+  lane_b_label TEXT,
+  video_key TEXT NOT NULL, -- object key in the storage bucket
+  duration_sec REAL,
+  rep_log TEXT,       -- JSON: full per-rep angle data for both lanes (everything captured, not just what's flagged)
+  review_flags TEXT,  -- JSON: [{lane, rep, atSeconds, reason}], the subset worth a coach's attention
+  recorded_by_user_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
 `);
 
 // Migration: judge assignments moved from per-gate to per-category. If an

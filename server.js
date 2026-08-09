@@ -2,6 +2,7 @@ const express = require('express');
 const session = require('express-session');
 const FileStore = require('session-file-store')(session);
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
 const mailer = require('./mailer');
 const path = require('path');
 const expressLayouts = require('express-ejs-layouts');
@@ -9,6 +10,8 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const db = require('./db');
 const scoring = require('./scoring');
+const storage = require('./storage');
+const multer = require('multer');
 
 const app = express();
 // Railway sits the app behind a reverse proxy — without this, Express ignores
@@ -158,6 +161,56 @@ app.post('/login', authLimiter, (req, res) => {
 
 app.get('/logout', (req, res) => { req.session.destroy(() => res.redirect('/')); });
 
+// ---- Forgot / reset password (self-service) ----
+// Always shows the same "check your email" message whether or not the
+// address exists — otherwise the form becomes a way to test which emails
+// have an account.
+app.get('/forgot-password', (req, res) => {
+  res.render('forgot-password', { title: 'Forgot Password', error: null, sent: false });
+});
+
+app.post('/forgot-password', authLimiter, (req, res) => {
+  const { email } = req.body;
+  if (!isValidEmail(email)) {
+    return res.render('forgot-password', { title: 'Forgot Password', error: 'Please enter a valid email address.', sent: false });
+  }
+  const user = db.prepare("SELECT * FROM users WHERE email=?").get(email.trim().toLowerCase());
+  if (user) {
+    const token = crypto.randomBytes(32).toString('hex');
+    const tokenHash = crypto.createHash('sha256').update(token).digest('hex');
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString(); // 1 hour
+    db.prepare(`INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES (?,?,?)`)
+      .run(user.id, tokenHash, expiresAt);
+    const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
+    mailer.send(mailer.passwordResetEmail({ user, resetUrl: `${site}/reset-password/${token}` }));
+  }
+  res.render('forgot-password', { title: 'Forgot Password', error: null, sent: true });
+});
+
+app.get('/reset-password/:token', (req, res) => {
+  const tokenHash = crypto.createHash('sha256').update(req.params.token).digest('hex');
+  const row = db.prepare("SELECT * FROM password_resets WHERE token_hash=?").get(tokenHash);
+  const valid = row && !row.used_at && new Date(row.expires_at) > new Date();
+  res.render('reset-password', { title: 'Reset Password', error: null, valid: !!valid, token: req.params.token });
+});
+
+app.post('/reset-password/:token', authLimiter, (req, res) => {
+  const { password, confirm_password } = req.body;
+  const tokenHash = crypto.createHash('sha256').update(req.params.token).digest('hex');
+  const row = db.prepare("SELECT * FROM password_resets WHERE token_hash=?").get(tokenHash);
+  const valid = row && !row.used_at && new Date(row.expires_at) > new Date();
+  if (!valid) {
+    return res.render('reset-password', { title: 'Reset Password', error: 'This reset link is invalid or has expired — request a new one.', valid: false, token: req.params.token });
+  }
+  if (!isValidPassword(password) || password !== confirm_password) {
+    return res.render('reset-password', { title: 'Reset Password', error: 'Passwords must match and be at least 6 characters.', valid: true, token: req.params.token });
+  }
+  const hash = bcrypt.hashSync(password, 10);
+  db.prepare("UPDATE users SET password_hash=? WHERE id=?").run(hash, row.user_id);
+  db.prepare("UPDATE password_resets SET used_at=CURRENT_TIMESTAMP WHERE id=?").run(row.id);
+  res.render('login', { title: 'Log In', error: 'Password updated — log in with your new password.', next: '/' });
+});
+
 function roleHome(role) {
   if (role === 'admin') return '/admin';
   if (role === 'gym_admin') return '/gym';
@@ -207,6 +260,15 @@ app.post('/signup/athlete', authLimiter, (req, res) => {
     .run(uid, region_id, chosenTeamId, wantsTeam);
 
   req.session.user = { id: uid, email: email.trim().toLowerCase(), role: 'athlete', first_name: first_name.trim(), last_name: last_name.trim() };
+
+  // Fire-and-forget welcome email — never block the redirect on mail being
+  // slow/down (mailer.send already swallows its own errors).
+  const regionRow = regions.find(r => String(r.id) === String(region_id));
+  mailer.send(mailer.welcomeAthleteEmail({
+    user: { first_name: first_name.trim(), email: email.trim().toLowerCase() },
+    regionName: regionRow ? regionRow.name : null,
+  }));
+
   res.redirect('/profile?welcome=1');
 });
 
@@ -259,6 +321,15 @@ app.post('/signup/gym', authLimiter, (req, res) => {
   }
 
   req.session.user = { id: uid, email: email.trim().toLowerCase(), role: 'gym_admin', first_name: admin_first_name, last_name: admin_last_name };
+
+  const gymRegionRow = regions.find(r => String(r.id) === String(region_id));
+  mailer.send(mailer.welcomeGymEmail({
+    user: { first_name: (admin_first_name || '').trim(), email: email.trim().toLowerCase() },
+    gymName: gym_name.trim(),
+    regionName: gymRegionRow ? gymRegionRow.name : null,
+    teamNames: names,
+  }));
+
   res.redirect('/gym?welcome=1');
 });
 
@@ -1090,6 +1161,120 @@ app.get('/admin/region/:id', requireLogin, requireRole('admin'), (req, res) => {
 // ============ LEAGUE OPERATOR DASHBOARD (placeholder home once approved) ============
 app.get('/league', requireLogin, requireRole('league_operator'), (req, res) => {
   res.render('league-dashboard', { title: 'League Operator' });
+});
+
+// ============ WEDGETAIL RECORDINGS ============
+// Upload endpoint deliberately has no login gate, matching wedgetail.html
+// itself (a standalone tool a judge opens on their phone on the day, same as
+// today — see product doc). It's still rate-limited and size-capped. Viewing
+// recordings back IS gated, below, since that's where athletes' likenesses
+// actually get looked at after the fact.
+const recordingUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 500 * 1024 * 1024 }, // 500MB — generous for a single exercise "set" clip
+});
+const recordingLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 40,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: 'Too many recording uploads from this device — please wait a few minutes.',
+});
+
+app.post('/api/wedgetail/recordings', recordingLimiter, recordingUpload.single('video'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No video file received.' });
+  if (!storage.storageEnabled()) {
+    // Fail soft: Wedgetail keeps counting reps live either way — recording
+    // is a bonus feature, not something that should block a live judge.
+    console.log('[wedgetail] recording received but storage not configured — discarding.');
+    return res.json({ ok: false, stored: false, reason: 'Video storage not configured yet.' });
+  }
+
+  const { exercise_name, mode, lane_a_label, lane_b_label, duration_sec, fixture_id } = req.body;
+  if (!isReasonableLength(exercise_name, 120) || (mode !== 'angle' && mode !== 'floor')) {
+    return res.status(400).json({ error: 'Missing or invalid exercise_name/mode.' });
+  }
+
+  let repLog = [], reviewFlags = [];
+  try {
+    if (req.body.rep_log) repLog = JSON.parse(req.body.rep_log);
+    if (req.body.review_flags) reviewFlags = JSON.parse(req.body.review_flags);
+  } catch (e) {
+    return res.status(400).json({ error: 'rep_log/review_flags must be valid JSON.' });
+  }
+
+  const day = new Date().toISOString().slice(0, 10);
+  const key = `wedgetail/${day}/${crypto.randomUUID()}.webm`;
+
+  try {
+    await storage.uploadRecording({ key, buffer: req.file.buffer, contentType: req.file.mimetype || 'video/webm' });
+  } catch (e) {
+    console.error('[wedgetail] upload to storage failed:', e.message);
+    return res.status(502).json({ error: 'Video storage upload failed — reps already counted are unaffected.' });
+  }
+
+  const fixtureIdVal = fixture_id && db.prepare("SELECT id FROM fixtures WHERE id=?").get(fixture_id) ? fixture_id : null;
+  const info = db.prepare(`
+    INSERT INTO recordings (fixture_id, exercise_name, mode, lane_a_label, lane_b_label, video_key, duration_sec, rep_log, review_flags, recorded_by_user_id)
+    VALUES (?,?,?,?,?,?,?,?,?,?)
+  `).run(
+    fixtureIdVal, exercise_name.trim().slice(0, 120), mode,
+    (lane_a_label || '').trim().slice(0, 80) || null, (lane_b_label || '').trim().slice(0, 80) || null,
+    key, parseFloat(duration_sec) || null, JSON.stringify(repLog), JSON.stringify(reviewFlags),
+    req.session.user ? req.session.user.id : null
+  );
+
+  res.json({ ok: true, stored: true, id: info.lastInsertRowid, flagCount: reviewFlags.length });
+});
+
+// Coaches (gym admins) see recordings tagged with one of their own team
+// names in either lane. Admin sees everything. This is a simple name-match
+// rather than a hard foreign key because a lane label is just whatever tag
+// was on-screen when recording started — it's descriptive, not a booking.
+app.get('/gym/recordings', requireLogin, requireRole('gym_admin', 'admin'), async (req, res) => {
+  let rows;
+  if (req.session.user.role === 'admin') {
+    rows = db.prepare("SELECT * FROM recordings ORDER BY created_at DESC LIMIT 200").all();
+  } else {
+    const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+    const teams = db.prepare("SELECT name FROM teams WHERE gym_id=?").all(gym.id).map(t => t.name);
+    if (teams.length === 0) {
+      rows = [];
+    } else {
+      const placeholders = teams.map(() => '?').join(',');
+      rows = db.prepare(`
+        SELECT * FROM recordings
+        WHERE lane_a_label IN (${placeholders}) OR lane_b_label IN (${placeholders})
+        ORDER BY created_at DESC LIMIT 200
+      `).all(...teams, ...teams);
+    }
+  }
+  rows.forEach(r => {
+    r.reviewFlagsParsed = JSON.parse(r.review_flags || '[]');
+  });
+  res.render('gym-recordings', { title: 'Wedgetail Recordings', recordings: rows });
+});
+
+app.get('/gym/recordings/:id', requireLogin, requireRole('gym_admin', 'admin'), async (req, res) => {
+  const rec = db.prepare("SELECT * FROM recordings WHERE id=?").get(req.params.id);
+  if (!rec) return res.status(404).render('error', { title: 'Not Found', message: 'Recording not found.' });
+
+  if (req.session.user.role !== 'admin') {
+    const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+    const teams = db.prepare("SELECT name FROM teams WHERE gym_id=?").all(gym.id).map(t => t.name);
+    if (!teams.includes(rec.lane_a_label) && !teams.includes(rec.lane_b_label)) {
+      return res.status(403).render('error', { title: 'Access Denied', message: "This recording isn't from one of your teams." });
+    }
+  }
+
+  const playbackUrl = await storage.getPlaybackUrl(rec.video_key, 3600);
+  res.render('gym-recording-detail', {
+    title: rec.exercise_name,
+    rec,
+    playbackUrl,
+    repLog: JSON.parse(rec.rep_log || '[]'),
+    reviewFlags: JSON.parse(rec.review_flags || '[]'),
+  });
 });
 
 // ============ 404 ============

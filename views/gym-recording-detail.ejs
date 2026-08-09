@@ -1,0 +1,49 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/gym">Dashboard</a>
+    <a href="/gym/fixtures">Fixtures</a>
+    <a href="/gym/recordings" class="active">Wedgetail Recordings</a>
+    <a href="/account">My Account</a>
+    <a href="/guide/gym">Gym Guide</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">Wedgetail Recording</div>
+    <h2><%= rec.exercise_name %> — <%= rec.lane_a_label || 'Lane A' %> / <%= rec.lane_b_label || 'Lane B' %></h2>
+    <p style="color:var(--muted);margin-top:.3rem;"><%= new Date(rec.created_at).toLocaleString() %></p>
+
+    <% if (!playbackUrl) { %>
+      <div class="form-error" style="margin-top:1rem;">Video isn't available (storage may not be configured).</div>
+    <% } else { %>
+      <video id="clip" src="<%= playbackUrl %>" controls style="width:100%;max-width:900px;border-radius:12px;margin-top:1rem;background:#000;"></video>
+    <% } %>
+
+    <h3 style="margin-top:2rem;font-size:1.3rem;color:var(--forest);">Flagged for review (<%= reviewFlags.length %>)</h3>
+    <p class="lede">Reps that were close to the live threshold — jump straight to them below.</p>
+    <div class="table-wrap" style="margin-top:.8rem;">
+      <table>
+        <tr><th>Lane</th><th>Rep #</th><th>Time in clip</th><th>Why flagged</th><th></th></tr>
+        <% if (reviewFlags.length === 0) { %>
+          <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No reps were flagged in this set.</td></tr>
+        <% } %>
+        <% reviewFlags.forEach(f => { %>
+          <tr>
+            <td><%= f.lane %></td>
+            <td><%= f.rep %></td>
+            <td><%= Math.floor(f.atSeconds / 60) %>:<%= String(Math.round(f.atSeconds % 60)).padStart(2,'0') %></td>
+            <td><%= f.reason %></td>
+            <td><% if (playbackUrl) { %><button class="btn btn-outline btn-sm" onclick="seekTo(<%= f.atSeconds %>)">Jump</button><% } %></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+  </div>
+</div>
+
+<script>
+  function seekTo(seconds) {
+    const v = document.getElementById('clip');
+    if (!v) return;
+    v.currentTime = Math.max(0, seconds - 1.5); // a little lead-in so the rep isn't already mid-motion
+    v.play();
+  }
+</script>

@@ -78,7 +78,8 @@
      don't need to nail an exact camera position. Pose estimation counts reps off a hip–knee angle cycle (squat /
      deadlift movement pattern), <b style="color:var(--off)">deliberately generously</b> — the count is meant to be
      crude and fast, not a form judge. All quality control lives with the coach, made live via
-     <b style="color:var(--off)">NO REP</b>. Everything runs in this browser tab — no video is uploaded anywhere.</p>
+     <b style="color:var(--off)">NO REP</b>. Tracking itself runs entirely in this browser tab; the raw camera feed from
+     GO to Reset is uploaded afterwards so coaches can review it, with reps close to the cutoff flagged for a second look.</p>
 </header>
 
 <div class="controls">
@@ -113,6 +114,10 @@
   <button class="btn-main" id="goBtn" style="display:none;background:var(--amber);" disabled>BOTH READY — GO</button>
   <button class="btn-outline" id="resetBtn">Reset for Next Station</button>
   <button class="btn-outline" id="calibrateBtn" style="display:none;border-color:var(--lime);color:var(--lime);">Calibrate Floor (both lanes)</button>
+  <div class="field">
+    <label>Recording</label>
+    <span id="recStatus" style="font-size:.85rem;color:var(--slate);padding:.4rem 0;">not recording</span>
+  </div>
 </div>
 
 <div class="stage">
@@ -168,6 +173,12 @@
     <li>Integration point: each auto-count or NO-REP tap here is exactly the payload the app's existing
         <code>/api/judge/fixture/:id/category/:cat/result</code> endpoint expects. Wiring this prototype into the live
         judge screen is the next step once the counting itself is proven reliable at the venue — not done here.</li>
+    <li><b>Recording:</b> from <b>BOTH READY — GO</b> until <b>Reset for Next Station</b>, the raw camera feed (both lanes,
+        exactly what's on screen) is recorded and, on reset, uploaded for coaches to review afterwards. Reps whose
+        bottom position was close to the live cutoff — not necessarily bad, just close — get flagged with a timestamp
+        so a coach can jump straight to them. This never changes what counted live; it's coaching material, not a
+        scoring appeal. If the upload fails (e.g. bad connection), the reps already counted are unaffected — only the
+        clip is lost.</li>
   </ul>
 </div>
 
@@ -218,18 +229,26 @@ class Lane {
     this.view = null; // {x,y,w,h} — the auto-tracking crop window within this lane's raw half-frame, in raw pixels
     this.rawHalf = {sw:0, sh:0}; // this lane's full half-frame size, in raw video pixels
     this.lostSince = null; // timestamp tracking was last lost — drives the widen-and-search-again behaviour
+    this.label = el.querySelector('.tag') ? el.querySelector('.tag').textContent.trim() : (el.dataset.lane || '');
+    this.bottomMetricAtHit = null; // the angle (or floor delta) captured at the instant "bottom" triggered, for this rep in progress
+    this.bottomConfAtHit = null;   // tracking confidence at that same instant
+    this.repEvents = []; // full per-rep log for this set: {rep, atSeconds, mode, bottomMetric, lockoutAngle, conf, flagged, reason}
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
       this.countEl.textContent = this.reps;
+      // the removed rep is still in repEvents (it's the raw record of what the
+      // camera saw) — just drop the most recent one so the log matches the count
+      this.repEvents = this.repEvents.filter(r => r.rep <= this.reps);
     });
     el.querySelector('[data-role=plus]').addEventListener('click', () => {
       this.reps += 1;
       this.countEl.textContent = this.reps;
+      this.repEvents.push({ rep: this.reps, atSeconds: getRecSeconds(), mode: CFG.bottomMode(), bottomMetric: null, lockoutAngle: null, conf: null, flagged: false, reason: 'manually added (+1) by judge' });
     });
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.countEl.textContent = 0; }
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; }
 
   // Grabs this lane's half of the shared video — but rather than a rigid
   // static crop, each lane maintains its own "view window" that smoothly
@@ -359,6 +378,38 @@ class Lane {
     return true;
   }
 
+  // The live cutoff stays crude on purpose — the count only needs to keep
+  // flowing, quality control is the coach's job via NO REP in the moment.
+  // This is the finer-grained side of that same idea after the fact: a rep
+  // that only just cleared the crude bar gets flagged for a coach to look
+  // at later, without touching whether it counted live.
+  logRepEvent({ lockoutAngle, mode }){
+    const ANGLE_REVIEW_MARGIN = 8;  // degrees — how close to the bottom-angle cutoff counts as "borderline"
+    const FLOOR_REVIEW_MARGIN = 12; // px — how close to the floor tolerance counts as "borderline"
+    const LOW_CONF_THRESHOLD = 0.5; // below this, trust the video review over the live call
+
+    let flagged = false, reason = null;
+    if (mode === 'floor') {
+      const tol = CFG.floorTolerance();
+      const marginFromLine = this.bottomMetricAtHit - (-tol); // how far past the tolerance line it was, in px
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `weight only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+    } else {
+      const threshold = CFG.bottomAngle();
+      const marginFromLine = threshold - this.bottomMetricAtHit; // how many degrees deeper than the cutoff it went
+      if (marginFromLine < ANGLE_REVIEW_MARGIN) { flagged = true; reason = `depth only just cleared the cutoff (${this.bottomMetricAtHit.toFixed(0)}° vs ${threshold}° needed)`; }
+    }
+    if (!flagged && this.bottomConfAtHit != null && this.bottomConfAtHit < LOW_CONF_THRESHOLD) {
+      flagged = true; reason = `tracking confidence was low at the bottom of this rep (${(this.bottomConfAtHit*100).toFixed(0)}%) — worth a visual check`;
+    }
+
+    this.repEvents.push({
+      rep: this.reps, atSeconds: getRecSeconds(), mode,
+      bottomMetric: this.bottomMetricAtHit, lockoutAngle,
+      conf: this.bottomConfAtHit, flagged, reason,
+    });
+    this.bottomMetricAtHit = null; this.bottomConfAtHit = null;
+  }
+
   updateCount(kp){
     // pick whichever side (left/right) is more confidently visible this frame
     const sideScore = side => (kp[`${side}_hip`]?.score||0)+(kp[`${side}_knee`]?.score||0)+(kp[`${side}_ankle`]?.score||0);
@@ -410,6 +461,10 @@ class Lane {
 
     if (!this.atBottom && bottomHit){
       this.atBottom = true;
+      // Capture exactly what tripped "bottom" right now — this is what gets
+      // checked against the review margin once the rep completes at lockout.
+      this.bottomMetricAtHit = mode === 'floor' ? (this.lastWrist.y - this.floorRefY) : angle;
+      this.bottomConfAtHit = avgConf;
       this.phaseEl.textContent = `${bottomLabel} — ascending…`;
       this.phaseEl.classList.remove('hit');
     } else if (this.atBottom && angle > TOP){
@@ -418,6 +473,7 @@ class Lane {
       this.countEl.textContent = this.reps;
       this.phaseEl.textContent = `REP COUNTED — lockout at ${angle.toFixed(0)}°`;
       this.phaseEl.classList.add('hit');
+      this.logRepEvent({ lockoutAngle: angle, mode });
     } else if (this.atBottom){
       this.phaseEl.textContent = `ascending (${angle.toFixed(0)}°)`;
       this.phaseEl.classList.remove('hit');
@@ -431,12 +487,98 @@ class Lane {
   }
 }
 
-let detector, video, running = false;
+let detector, video, running = false, cameraStream = null;
 const laneA = new Lane(document.querySelector('[data-lane=A]'));
 const laneB = new Lane(document.querySelector('[data-lane=B]'));
 laneA.crop = 'left'; laneB.crop = 'right';
 
-document.getElementById('resetBtn').addEventListener('click', () => { laneA.reset(); laneB.reset(); });
+// ---- Recording: raw camera feed, from GO to Reset, uploaded for coach review ----
+let mediaRecorder = null, recordedChunks = [], recStartPerf = null;
+const recStatusEl = document.getElementById('recStatus');
+
+function getRecSeconds(){ return mediaRecorder && mediaRecorder.state === 'recording' ? (performance.now() - recStartPerf) / 1000 : 0; }
+
+function pickMimeType(){
+  for (const t of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+function startRecording(){
+  if (!cameraStream || (mediaRecorder && mediaRecorder.state === 'recording')) return;
+  try {
+    recordedChunks = [];
+    const mimeType = pickMimeType();
+    mediaRecorder = new MediaRecorder(cameraStream, mimeType ? { mimeType } : undefined);
+    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
+    mediaRecorder.start(1000); // gather in 1s chunks so a crash mid-set doesn't lose the whole clip
+    recStartPerf = performance.now();
+    recStatusEl.textContent = '● recording';
+    recStatusEl.style.color = 'var(--danger)';
+  } catch (e) {
+    console.error('Wedgetail: could not start recording', e);
+    recStatusEl.textContent = 'recording unavailable';
+  }
+}
+
+// Stops recording, uploads the clip + both lanes' rep logs, then resolves —
+// deliberately never throws, so a bad connection never blocks Reset from
+// clearing counts for the next station.
+async function stopAndUploadRecording(){
+  if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
+  const duration = getRecSeconds();
+  const finished = new Promise(resolve => { mediaRecorder.onstop = resolve; });
+  mediaRecorder.stop();
+  await finished;
+
+  const mimeType = mediaRecorder.mimeType || 'video/webm';
+  const blob = new Blob(recordedChunks, { type: mimeType });
+  recordedChunks = [];
+  mediaRecorder = null;
+
+  if (blob.size === 0) { recStatusEl.textContent = 'not recording'; recStatusEl.style.color = 'var(--slate)'; return; }
+
+  const repLog = [
+    ...laneA.repEvents.map(r => ({ lane: laneA.label || 'A', ...r })),
+    ...laneB.repEvents.map(r => ({ lane: laneB.label || 'B', ...r })),
+  ];
+  const reviewFlags = repLog.filter(r => r.flagged).map(r => ({ lane: r.lane, rep: r.rep, atSeconds: r.atSeconds, reason: r.reason }));
+
+  recStatusEl.textContent = 'saving clip…';
+  recStatusEl.style.color = 'var(--amber)';
+
+  const form = new FormData();
+  form.append('video', blob, 'clip.webm');
+  form.append('exercise_name', document.getElementById('exerciseName').value || 'Exercise');
+  form.append('mode', CFG.bottomMode());
+  form.append('lane_a_label', laneA.label || 'A');
+  form.append('lane_b_label', laneB.label || 'B');
+  form.append('duration_sec', String(duration));
+  form.append('rep_log', JSON.stringify(repLog));
+  form.append('review_flags', JSON.stringify(reviewFlags));
+
+  try {
+    const res = await fetch('/api/wedgetail/recordings', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.ok && data.stored) {
+      recStatusEl.textContent = `saved ✓ (${data.flagCount} flagged)`;
+      recStatusEl.style.color = 'var(--lime)';
+    } else {
+      recStatusEl.textContent = 'clip not saved (storage not set up)';
+      recStatusEl.style.color = 'var(--slate)';
+    }
+  } catch (e) {
+    console.error('Wedgetail: recording upload failed', e);
+    recStatusEl.textContent = 'clip failed to upload — reps unaffected';
+    recStatusEl.style.color = 'var(--danger)';
+  }
+}
+
+document.getElementById('resetBtn').addEventListener('click', async () => {
+  await stopAndUploadRecording();
+  laneA.reset(); laneB.reset();
+});
 
 // Remember whatever thresholds were last used on THIS device/browser, so a
 // judge who finds better numbers doesn't have to re-enter them next test —
@@ -460,8 +602,10 @@ if (document.getElementById('bottomMode').value === 'floor') {
 
 document.getElementById('goBtn').addEventListener('click', () => {
   // Both lanes arm together — mirrors a synchronised start, not one athlete
-  // getting a head start on the other.
+  // getting a head start on the other. Recording starts at the same moment,
+  // so the clip covers exactly the window reps can be counted in.
   laneA.armed = true; laneB.armed = true;
+  startRecording();
 });
 
 document.getElementById('bottomMode').addEventListener('change', (e) => {
@@ -506,6 +650,7 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     const deviceId = document.getElementById('cameraSelect').value;
     const constraints = { video: deviceId ? {deviceId:{exact:deviceId}} : {facingMode:'environment'}, audio:false };
     const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    cameraStream = stream;
     video = document.createElement('video');
     video.srcObject = stream; video.playsInline = true; await video.play();
 
