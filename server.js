@@ -1277,42 +1277,6 @@ app.get('/gym/recordings/:id', requireLogin, requireRole('gym_admin', 'admin'), 
   });
 });
 
-// ============ TEMP DIAGNOSTIC — remove once the SMTP question is settled ============
-// Tries a raw TCP connection to Zoho's SMTP ports from *inside* this actual
-// running container, plus a known-good control (Google on 443) so we can
-// tell "everything is blocked" apart from "just these specific ports/hosts
-// are blocked." Answers the question with real data instead of guessing.
-app.get('/debug/smtp-check', async (req, res) => {
-  const net = require('net');
-  function tryConnect(host, port, timeoutMs = 6000) {
-    return new Promise((resolve) => {
-      const start = Date.now();
-      const socket = net.createConnection({ host, port });
-      const timer = setTimeout(() => {
-        socket.destroy();
-        resolve({ host, port, ok: false, ms: Date.now() - start, error: 'timeout' });
-      }, timeoutMs);
-      socket.on('connect', () => {
-        clearTimeout(timer);
-        socket.destroy();
-        resolve({ host, port, ok: true, ms: Date.now() - start });
-      });
-      socket.on('error', (e) => {
-        clearTimeout(timer);
-        resolve({ host, port, ok: false, ms: Date.now() - start, error: e.message });
-      });
-    });
-  }
-
-  const results = await Promise.all([
-    tryConnect('www.google.com', 443),   // control: is outbound HTTPS working at all?
-    tryConnect('smtp.zoho.com.au', 465),
-    tryConnect('smtp.zoho.com.au', 587),
-    tryConnect('smtp.zoho.com', 465),    // global (non-.com.au) endpoint, in case regional routing is the issue
-  ]);
-  res.json({ checkedAt: new Date().toISOString(), results });
-});
-
 // ============ 404 ============
 app.use((req, res) => {
   res.status(404).render('error', { title: 'Not Found', message: "That page doesn't exist." });

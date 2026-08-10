@@ -1,14 +1,28 @@
-// Outbound email via Zoho Mail SMTP (part of the Zoho One subscription).
+// Outbound email — two possible transports, chosen automatically:
+//
+// 1. ZeptoMail (Zoho's transactional email API, HTTPS/443) — used if
+//    ZEPTOMAIL_TOKEN is set. Preferred: Railway blocks outbound SMTP ports
+//    465/587 (confirmed via a live network test from inside the app itself),
+//    so raw SMTP to Zoho Mail never completes. ZeptoMail is the same Zoho
+//    account/ecosystem, just sending over a normal HTTPS API call instead —
+//    no new vendor, just a different Zoho product.
+// 2. Zoho Mail SMTP (nodemailer) — kept as a fallback for any environment
+//    where SMTP ports aren't blocked (e.g. running locally).
 //
 // Configured entirely through environment variables so credentials never live
 // in the repo, and so the app runs fine with mail switched off (local dev,
-// tests, or before the mailbox is set up) — sends just log and no-op.
+// tests, or before either is set up) — sends just log and no-op.
+//
+//   ZEPTOMAIL_TOKEN   the full "Send Mail token" value from ZeptoMail's API
+//                     tab, including the "Zoho-enczapikey " prefix — used
+//                     as-is in the Authorization header.
+//   MAIL_FROM         display from, e.g. "Gym League Global <glsignup@gymleagueglobal.com.au>"
+//                     must be on the domain verified in ZeptoMail
 //
 //   SMTP_HOST  e.g. smtp.zoho.com.au   (AU data centre — matches the org)
-//   SMTP_PORT  465 (SSL)
+//   SMTP_PORT  465 (SSL) or 587 (TLS)
 //   SMTP_USER  the sending mailbox, e.g. noreply@gymleagueglobal.com.au
 //   SMTP_PASS  a Zoho APP PASSWORD for that mailbox (not the login password)
-//   MAIL_FROM  display from, e.g. "Gym League Global <noreply@gymleagueglobal.com.au>"
 //
 // MAIL_TRANSPORT=json switches to nodemailer's in-memory JSON transport
 // (used by the test suite to inspect messages without a real SMTP server).
@@ -20,6 +34,8 @@ function getTransport() {
   if (transport) return transport;
   if (process.env.MAIL_TRANSPORT === 'json') {
     transport = nodemailer.createTransport({ jsonTransport: true });
+  } else if (process.env.ZEPTOMAIL_TOKEN) {
+    transport = 'zeptomail'; // handled directly in send(), not via nodemailer
   } else if (process.env.SMTP_HOST && process.env.SMTP_USER && process.env.SMTP_PASS) {
     transport = nodemailer.createTransport({
       host: process.env.SMTP_HOST,
@@ -33,16 +49,47 @@ function getTransport() {
 
 function mailEnabled() { return !!getTransport(); }
 
+// Parses "Display Name <email@domain.com>" into ZeptoMail's separate
+// address/name fields — MAIL_FROM is kept in the familiar combined format
+// everywhere else in this file for consistency with nodemailer.
+function parseFromHeader(from) {
+  const match = /^(.*)<(.+)>$/.exec(from || '');
+  if (match) return { address: match[2].trim(), name: match[1].trim().replace(/^"|"$/g, '') };
+  return { address: from, name: undefined };
+}
+
 // Fire-and-forget: never let a mail failure break the request that triggered
-// it (assigning a judge must succeed even if Zoho is unreachable).
+// it (assigning a judge must succeed even if the mail provider is unreachable).
 async function send({ to, subject, text, html }) {
   const t = getTransport();
   if (!t) {
     console.log(`[mail disabled] would send "${subject}" to ${to}`);
     return null;
   }
+  const from = process.env.MAIL_FROM || process.env.SMTP_USER;
   try {
-    const from = process.env.MAIL_FROM || process.env.SMTP_USER;
+    if (t === 'zeptomail') {
+      const fromParsed = parseFromHeader(from);
+      const res = await fetch('https://api.zeptomail.com.au/v1.1/email', {
+        method: 'POST',
+        headers: {
+          'Authorization': process.env.ZEPTOMAIL_TOKEN, // full string already includes "Zoho-enczapikey " prefix
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          from: fromParsed,
+          to: [{ email_address: { address: to } }],
+          subject,
+          textbody: text,
+          htmlbody: html,
+        }),
+      });
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`ZeptoMail API ${res.status}: ${body}`);
+      }
+      return await res.json();
+    }
     return await t.sendMail({ from, to, subject, text, html });
   } catch (e) {
     console.error(`[mail] failed sending "${subject}" to ${to}:`, e.message);
