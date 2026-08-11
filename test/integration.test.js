@@ -27,7 +27,7 @@ test.after(() => new Promise((resolve) => liveServer.close(resolve)));
 test('home page loads', async () => {
   const res = await request(app).get('/');
   assert.strictEqual(res.status, 200);
-  assert.match(res.text, /Gym vs gym/);
+  assert.match(res.text, /Your gym\. Their gym\./);
 });
 
 test('regions page loads and lists North Shore as live', async () => {

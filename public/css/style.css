@@ -139,6 +139,25 @@ footer a:hover{color:var(--lime);}
 .foot-bottom{border-top:1px solid #133029;margin-top:2rem;padding-top:1.5rem;font-size:.78rem;color:#6B8079;text-align:center;}
 @media (max-width:800px){footer .foot-grid{grid-template-columns:1fr 1fr;}}
 
+.hero-secondary{display:block;margin-top:1.1rem;color:var(--slate-lt);font-size:.85rem;text-decoration:underline;text-underline-offset:3px;}
+.hero-secondary:hover{color:var(--lime);}
+
+/* What Is GL — single hook + fact strip, not a stat grid */
+.fact-strip{display:flex;justify-content:center;gap:2.2rem;margin:0 0 2rem;flex-wrap:wrap;}
+.fact{font-family:'Barlow Condensed',sans-serif;font-weight:700;color:var(--slate);font-size:.95rem;text-transform:uppercase;letter-spacing:.03em;}
+.fact b{color:var(--forest);font-family:'Roboto Mono',monospace;}
+
+/* perspective sections — one hero point, rest smaller supporting cards */
+.hero-point{background:var(--forest);color:var(--white);border-radius:14px;padding:2.2rem 2rem;margin-bottom:1.5rem;}
+.hero-point .tag{font-family:'Barlow Condensed',sans-serif;font-weight:800;color:var(--lime);font-size:.75rem;letter-spacing:.18em;text-transform:uppercase;margin-bottom:.6rem;}
+.hero-point h3{font-family:'Barlow Condensed',sans-serif;font-weight:800;text-transform:none;font-size:1.6rem;margin-bottom:.6rem;letter-spacing:0;}
+.hero-point p{color:var(--slate-lt);margin:0;max-width:520px;font-size:.95rem;}
+.minor-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:.9rem;}
+.minor{background:#fff;border:1px solid var(--border);border-radius:10px;padding:1rem 1.1rem;}
+.minor h4{font-family:'Barlow Condensed',sans-serif;font-weight:700;text-transform:none;color:var(--forest);font-size:.95rem;margin-bottom:.3rem;letter-spacing:0;}
+.minor p{color:var(--muted);font-size:.82rem;margin:0;}
+@media (max-width:760px){.minor-grid{grid-template-columns:1fr;}}
+
 /* guide pages */
 .guide-hero{background:var(--forest);color:var(--white);padding:3.5rem 0;text-align:center;}
 .guide-body{max-width:760px;margin:0 auto;padding:3rem 1.5rem 5rem;}

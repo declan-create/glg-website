@@ -147,26 +147,80 @@ function getTeamTotalPoints(fixtureId, teamId) {
   return exPts + g4Pts;
 }
 
+// Whether a team attempted every station in a fixture — every exercise in
+// gates 1-3 has a recorded raw_value (not null) for every category, and every
+// category's Gate 4 sprint is marked completed. This is what "completing all
+// stations" means for the participation point below — a team that no-showed
+// or DNF'd partway through does not get credit just for showing up.
+function teamCompletedAllStations(fixtureId, teamId) {
+  const exercises = db.prepare(`
+    SELECT e.id FROM exercises e JOIN gates g ON g.id = e.gate_id WHERE g.is_sprint_finish = 0
+  `).all();
+  for (const ex of exercises) {
+    for (const category of CATEGORIES) {
+      const row = db.prepare("SELECT raw_value FROM category_results WHERE fixture_id=? AND exercise_id=? AND team_id=? AND category=?")
+        .get(fixtureId, ex.id, teamId, category);
+      if (!row || row.raw_value == null) return false;
+    }
+  }
+  for (const category of CATEGORIES) {
+    const row = db.prepare("SELECT completed FROM category_gate4_results WHERE fixture_id=? AND team_id=? AND category=?")
+      .get(fixtureId, teamId, category);
+    if (!row || !row.completed) return false;
+  }
+  return true;
+}
+
+/**
+ * MATCH POINTS (standings) — separate from the raw per-exercise scoring above.
+ * The per-exercise/gate scoring still decides WHO wins a fixture (whoever's
+ * summed raw points are higher) — this layer converts that result into
+ * season-table points, the way a league table works:
+ *   Win  -> 3 points
+ *   Loss -> 1 point IF you completed every station, otherwise 0
+ *   Draw (equal raw points, rare but possible) -> treated like a loss for
+ *     points purposes: 1 if completed, 0 if not — nobody's the outright
+ *     winner, but showing up and finishing still counts for something.
+ */
+function matchPointsForFixture(fixtureId, teamId, opponentId) {
+  const myRaw = getTeamTotalPoints(fixtureId, teamId);
+  const oppRaw = getTeamTotalPoints(fixtureId, opponentId);
+  const completed = teamCompletedAllStations(fixtureId, teamId);
+
+  let result;
+  if (myRaw > oppRaw) result = 'win';
+  else if (myRaw < oppRaw) result = 'loss';
+  else result = 'draw';
+
+  const matchPoints = result === 'win' ? 3 : (completed ? 1 : 0);
+  return { result, matchPoints, completed, rawFor: myRaw, rawAgainst: oppRaw };
+}
+
 function getSeasonLeaderboard(regionId) {
   const teams = db.prepare("SELECT * FROM teams WHERE region_id=?").all(regionId);
   const fixtures = db.prepare("SELECT * FROM fixtures WHERE region_id=?").all(regionId);
 
   const standings = teams.map(t => {
-    let points = 0, played = 0, wins = 0;
+    let matchPoints = 0, played = 0, wins = 0, draws = 0, losses = 0, rawFor = 0, rawAgainst = 0;
     for (const f of fixtures) {
       if (f.team_a_id !== t.id && f.team_b_id !== t.id) continue;
       if (f.status !== 'complete') continue;
       played++;
-      const myPts = getTeamTotalPoints(f.id, t.id);
       const oppId = f.team_a_id === t.id ? f.team_b_id : f.team_a_id;
-      const oppPts = getTeamTotalPoints(f.id, oppId);
-      points += myPts;
-      if (myPts > oppPts) wins++;
+      const outcome = matchPointsForFixture(f.id, t.id, oppId);
+      matchPoints += outcome.matchPoints;
+      rawFor += outcome.rawFor;
+      rawAgainst += outcome.rawAgainst;
+      if (outcome.result === 'win') wins++;
+      else if (outcome.result === 'draw') draws++;
+      else losses++;
     }
-    return { team: t, points, played, wins };
+    return { team: t, points: matchPoints, played, wins, draws, losses, rawFor, rawAgainst };
   });
 
-  standings.sort((a,b) => b.points - a.points);
+  // Sort by match points first (like a real league table), raw point
+  // difference as the tiebreaker (equivalent to goal difference).
+  standings.sort((a, b) => b.points - a.points || (b.rawFor - b.rawAgainst) - (a.rawFor - a.rawAgainst));
   return standings;
 }
 
@@ -177,6 +231,8 @@ module.exports = {
   scoreGate4,
   recomputeFixtureScores,
   getTeamTotalPoints,
+  teamCompletedAllStations,
+  matchPointsForFixture,
   getSeasonLeaderboard,
   meetsBenchmark,
   betterValue,

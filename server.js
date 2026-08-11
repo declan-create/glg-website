@@ -134,6 +134,7 @@ app.get('/regions/:slug', (req, res) => {
 });
 
 // ---- Guides ----
+app.get('/how-it-works', (req, res) => res.render('how-it-works', { title: 'How Gym League Global Works' }));
 app.get('/guide/participant', (req, res) => res.render('guide-participant', { title: 'Participant Guide' }));
 app.get('/guide/gym', (req, res) => res.render('guide-gym', { title: 'Gym Operator Guide' }));
 app.get('/guide/league', (req, res) => res.render('guide-league', { title: 'League Franchise Guide' }));
