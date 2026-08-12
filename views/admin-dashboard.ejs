@@ -36,6 +36,20 @@
       </p>
     </div>
 
+    <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Notifications</h3>
+    <div class="card" style="margin-top:.8rem;border-left:5px solid <%= adminNotifyConfigured ? '#4a9d3f' : '#d64545' %>;">
+      <% if (adminNotifyConfigured) { %>
+        <div style="font-weight:700;color:#2f7a27;font-size:1.05rem;">Email notifications are on</div>
+        <p style="color:var(--muted);font-size:.85rem;margin:.4rem 0 0;">Every new gym, athlete signup, and region application sends an email here — the tables below are a backup, not the only place to check.</p>
+      <% } else { %>
+        <div style="font-weight:700;color:#d64545;font-size:1.05rem;">Email notifications are off</div>
+        <p style="color:var(--muted);font-size:.85rem;margin:.4rem 0 0;">
+          Set <strong>ADMIN_NOTIFY_EMAIL</strong> on Railway to get an email for every new gym, athlete, and region application.
+          Until then, this page is the only place new signups show up — check back regularly.
+        </p>
+      <% } %>
+    </div>
+
     <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Pending League Operator Applications</h3>
     <div class="table-wrap" style="margin-top:.8rem;">
       <table>
@@ -52,6 +66,43 @@
               <form method="POST" action="/admin/operators/<%= o.id %>/approve"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
               <form method="POST" action="/admin/operators/<%= o.id %>/reject" onsubmit="return confirm('Reject this application?')"><button class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);" type="submit">Reject</button></form>
             </td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+
+    <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Recent Gym Signups</h3>
+    <div class="table-wrap" style="margin-top:.8rem;">
+      <table>
+        <tr><th>Gym</th><th>Admin Contact</th><th>Region</th><th>Signed Up</th></tr>
+        <% if (recentGyms.length === 0) { %>
+          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem;">No gyms yet.</td></tr>
+        <% } %>
+        <% recentGyms.forEach(g => { %>
+          <tr>
+            <td style="font-weight:600;"><%= g.name %></td>
+            <td style="color:var(--muted);"><%= g.first_name %> <%= g.last_name %> — <%= g.email %></td>
+            <td><%= g.region_name || '—' %></td>
+            <td style="color:var(--muted);font-size:.82rem;"><%= new Date(g.created_at).toLocaleString() %></td>
+          </tr>
+        <% }) %>
+      </table>
+    </div>
+
+    <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Recent Athlete Signups</h3>
+    <div class="table-wrap" style="margin-top:.8rem;">
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Region</th><th>Team</th><th>Signed Up</th></tr>
+        <% if (recentAthletes.length === 0) { %>
+          <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No athletes yet.</td></tr>
+        <% } %>
+        <% recentAthletes.forEach(a => { %>
+          <tr>
+            <td style="font-weight:600;"><%= a.first_name %> <%= a.last_name %></td>
+            <td style="color:var(--muted);"><%= a.email %></td>
+            <td><%= a.region_name || '—' %></td>
+            <td><%= a.team_name || 'Unassigned' %></td>
+            <td style="color:var(--muted);font-size:.82rem;"><%= new Date(a.created_at).toLocaleString() %></td>
           </tr>
         <% }) %>
       </table>

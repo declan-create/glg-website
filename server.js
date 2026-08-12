@@ -269,6 +269,15 @@ app.post('/signup/athlete', authLimiter, (req, res) => {
     user: { first_name: first_name.trim(), email: email.trim().toLowerCase() },
     regionName: regionRow ? regionRow.name : null,
   }));
+  const athleteNotice = mailer.adminNotifyEmail({
+    subject: `New athlete signup: ${first_name.trim()} ${last_name.trim()}`,
+    lines: [
+      `${first_name.trim()} ${last_name.trim()} (${email.trim().toLowerCase()}) just signed up.`,
+      `Region: ${regionRow ? regionRow.name : region_id}`,
+      chosenTeamId ? `Picked a team directly (team_id ${chosenTeamId}).` : (wantsTeam ? 'Asked to be assigned a team.' : 'No team preference set.'),
+    ],
+  });
+  if (athleteNotice) mailer.send(athleteNotice);
 
   res.redirect('/profile?welcome=1');
 });
@@ -330,6 +339,15 @@ app.post('/signup/gym', authLimiter, (req, res) => {
     regionName: gymRegionRow ? gymRegionRow.name : null,
     teamNames: names,
   }));
+  const gymNotice = mailer.adminNotifyEmail({
+    subject: `New gym registered: ${gym_name.trim()}`,
+    lines: [
+      `${gym_name.trim()} just registered, admin contact ${(admin_first_name || '').trim()} ${(admin_last_name || '').trim()} (${email.trim().toLowerCase()}).`,
+      `Region: ${gymRegionRow ? gymRegionRow.name : region_id}`,
+      `Team(s) created: ${names.join(', ')}`,
+    ],
+  });
+  if (gymNotice) mailer.send(gymNotice);
 
   res.redirect('/gym?welcome=1');
 });
@@ -361,6 +379,22 @@ app.post('/signup/league', authLimiter, (req, res) => {
   const safePitch = (pitch || '').trim().slice(0, 2000);
   db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,phone,bio,approved) VALUES (?,?,?,?,?,?,?,0)`)
     .run(email.trim().toLowerCase(), hash, 'league_operator', first_name.trim().slice(0,80), last_name.trim().slice(0,80), (phone || '').trim() || null, `Proposed region: ${proposed_region.trim().slice(0,120)}\n\n${safePitch}`);
+
+  mailer.send(mailer.leagueApplicationReceivedEmail({
+    user: { first_name: first_name.trim(), email: email.trim().toLowerCase() },
+    proposedRegion: proposed_region.trim(),
+  }));
+  const leagueNotice = mailer.adminNotifyEmail({
+    subject: `New region application: ${proposed_region.trim()}`,
+    lines: [
+      `${first_name.trim()} ${last_name.trim()} (${email.trim().toLowerCase()}) applied to run a region.`,
+      `Proposed region: ${proposed_region.trim()}`,
+      `Pitch: ${safePitch || '(none provided)'}`,
+      `Review at ${process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au'}/admin`,
+    ],
+  });
+  if (leagueNotice) mailer.send(leagueNotice);
+
   res.render('signup-league', { title: 'Apply to Run a Region', error: null, success: true });
 });
 
@@ -569,6 +603,13 @@ app.post('/gym/team/:id/add-member', requireLogin, requireRole('gym_admin'), (re
     .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender, (phone || '').trim() || null).lastInsertRowid;
   db.prepare("INSERT INTO athletes (user_id, region_id, team_id, wants_team, category) VALUES (?,?,?,0,?)")
     .run(uid, team.region_id, team.id, category || null);
+
+  mailer.send(mailer.addedByGymEmail({
+    user: { first_name: first_name.trim(), email: email.trim().toLowerCase() },
+    gymName: gym.name,
+    teamName: team.name,
+    tempPassword: DEFAULT_PASSWORD,
+  }));
 
   res.redirect('/gym/team/' + req.params.id + '?added=1');
 });
@@ -1137,7 +1178,25 @@ app.get('/admin', requireLogin, requireRole('admin'), (req, res) => {
   };
   const pendingOperators = db.prepare("SELECT * FROM users WHERE role='league_operator' AND approved=0").all();
   const regions = db.prepare("SELECT * FROM regions ORDER BY level, name").all();
-  res.render('admin-dashboard', { title: 'GLG Admin', stats, pendingOperators, regions, storage: db.storageInfo() });
+
+  // An in-app safety net alongside the admin notification emails — so a new
+  // signup is still visible here even if ADMIN_NOTIFY_EMAIL isn't set yet,
+  // or an email happens to get lost. Last 10 of each, newest first.
+  const recentGyms = db.prepare(`
+    SELECT g.name, g.created_at, u.first_name, u.last_name, u.email, r.name as region_name
+    FROM gyms g JOIN users u ON u.id=g.admin_user_id LEFT JOIN regions r ON r.id=g.region_id
+    ORDER BY g.created_at DESC LIMIT 10
+  `).all();
+  const recentAthletes = db.prepare(`
+    SELECT u.first_name, u.last_name, u.email, u.created_at, r.name as region_name, t.name as team_name
+    FROM athletes a JOIN users u ON u.id=a.user_id LEFT JOIN regions r ON r.id=a.region_id LEFT JOIN teams t ON t.id=a.team_id
+    ORDER BY u.created_at DESC LIMIT 10
+  `).all();
+
+  res.render('admin-dashboard', {
+    title: 'GLG Admin', stats, pendingOperators, regions, storage: db.storageInfo(),
+    recentGyms, recentAthletes, adminNotifyConfigured: !!process.env.ADMIN_NOTIFY_EMAIL,
+  });
 });
 
 app.post('/admin/operators/:id/approve', requireLogin, requireRole('admin'), (req, res) => {
@@ -1156,7 +1215,150 @@ app.get('/admin/region/:id', requireLogin, requireRole('admin'), (req, res) => {
   const fixtures = db.prepare(`
     SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
     JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.region_id=? ORDER BY f.week`).all(region.id);
-  res.render('admin-region', { title: region.name, region, teams, fixtures });
+  res.render('admin-region', { title: region.name, region, teams, fixtures, error: null });
+});
+
+// ---- Self-service competition setup: add teams, generate/create matches ----
+// A "team" created here needs a gym_id (schema requirement + the rest of the
+// app assumes every team belongs to a gym) but there's no real gym behind
+// it — so we auto-create a minimal placeholder gym with no admin_user_id,
+// named after the team. It's cleaned up again if the team is later deleted,
+// so these placeholders never pile up.
+app.post('/admin/region/:id/teams', requireLogin, requireRole('admin'), (req, res) => {
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(req.params.id);
+  const name = (req.body.name || '').trim().slice(0, 80);
+  if (!name) return res.redirect(`/admin/region/${region.id}`);
+
+  const gymId = db.prepare("INSERT INTO gyms (name, region_id, admin_user_id, address) VALUES (?,?,?,?)")
+    .run(`${name} (auto)`, region.id, null, null).lastInsertRowid;
+  db.prepare("INSERT INTO teams (name, gym_id, region_id, division) VALUES (?,?,?,?)")
+    .run(name, gymId, region.id, 'Open');
+
+  res.redirect(`/admin/region/${region.id}`);
+});
+
+// A team can only be removed while it's still empty and untouched — real
+// rosters and scored history are exactly what this whole site exists to
+// protect, so deleting either here (rather than through a more careful,
+// audited flow) is refused outright rather than silently cascading.
+app.post('/admin/region/:id/teams/:teamId/delete', requireLogin, requireRole('admin'), (req, res) => {
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(req.params.id);
+  const team = db.prepare("SELECT * FROM teams WHERE id=? AND region_id=?").get(req.params.teamId, region.id);
+  if (!team) return res.redirect(`/admin/region/${region.id}`);
+
+  const rosterCount = db.prepare("SELECT COUNT(*) c FROM athletes WHERE team_id=?").get(team.id).c;
+  const playedCount = db.prepare(`
+    SELECT COUNT(*) c FROM fixtures WHERE (team_a_id=? OR team_b_id=?) AND status='complete'
+  `).get(team.id, team.id).c;
+
+  if (rosterCount > 0 || playedCount > 0) {
+    const teams = db.prepare("SELECT t.*, g.name as gym_name FROM teams t JOIN gyms g ON g.id=t.gym_id WHERE t.region_id=?").all(region.id);
+    const fixtures = db.prepare(`
+      SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+      JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.region_id=? ORDER BY f.week`).all(region.id);
+    return res.render('admin-region', {
+      title: region.name, region, teams, fixtures,
+      error: rosterCount > 0
+        ? `Can't remove ${team.name} — it still has ${rosterCount} athlete(s) on its roster.`
+        : `Can't remove ${team.name} — it has already played a scored match.`,
+    });
+  }
+
+  // Also remove any scheduled-but-unplayed fixtures involving this team, so
+  // it doesn't leave a dangling fixture pointing at a team that no longer exists.
+  db.prepare("DELETE FROM fixtures WHERE (team_a_id=? OR team_b_id=?) AND status!='complete'").run(team.id, team.id);
+  db.prepare("DELETE FROM teams WHERE id=?").run(team.id);
+
+  // Only remove the gym if it was one of these auto-created placeholders
+  // (no admin account, no other teams still using it) — never touch a real
+  // gym that just happens to have lost one of several teams.
+  const gym = db.prepare("SELECT * FROM gyms WHERE id=?").get(team.gym_id);
+  if (gym && !gym.admin_user_id) {
+    const otherTeams = db.prepare("SELECT COUNT(*) c FROM teams WHERE gym_id=?").get(gym.id).c;
+    if (otherTeams === 0) db.prepare("DELETE FROM gyms WHERE id=?").run(gym.id);
+  }
+
+  res.redirect(`/admin/region/${region.id}`);
+});
+
+// Auto-generate matches: pairs whichever teams are ticked, in the order
+// given (1v2, 3v4, ...). An odd team out gets flagged rather than silently
+// dropped or erroring, so it's obvious a bye happened and why.
+app.post('/admin/region/:id/fixtures/generate', requireLogin, requireRole('admin'), (req, res) => {
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(req.params.id);
+  let teamIds = req.body.team_ids;
+  if (!teamIds) teamIds = [];
+  if (!Array.isArray(teamIds)) teamIds = [teamIds];
+  teamIds = teamIds.map(id => parseInt(id)).filter(Boolean);
+
+  const matchDate = (req.body.match_date || '').trim() || null;
+  const maxWeek = db.prepare("SELECT MAX(week) w FROM fixtures WHERE region_id=?").get(region.id).w || 0;
+  const nextWeek = maxWeek + 1;
+
+  let byeTeamId = null;
+  if (teamIds.length % 2 === 1) byeTeamId = teamIds.pop();
+
+  const insFixture = db.prepare("INSERT INTO fixtures (region_id, week, team_a_id, team_b_id, match_date, status) VALUES (?,?,?,?,?,?)");
+  for (let i = 0; i < teamIds.length; i += 2) {
+    insFixture.run(region.id, nextWeek, teamIds[i], teamIds[i + 1], matchDate, 'scheduled');
+  }
+
+  let error = null;
+  if (byeTeamId) {
+    const byeTeam = db.prepare("SELECT name FROM teams WHERE id=?").get(byeTeamId);
+    error = `${teamIds.length / 2} match(es) created. ${byeTeam ? byeTeam.name : 'One team'} got a bye this round (odd number of teams selected).`;
+  }
+
+  if (error) {
+    const teams = db.prepare("SELECT t.*, g.name as gym_name FROM teams t JOIN gyms g ON g.id=t.gym_id WHERE t.region_id=?").all(region.id);
+    const fixtures = db.prepare(`
+      SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+      JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.region_id=? ORDER BY f.week`).all(region.id);
+    return res.render('admin-region', { title: region.name, region, teams, fixtures, error, notice: error });
+  }
+
+  res.redirect(`/admin/region/${region.id}`);
+});
+
+// Manual one-off match — same week-numbering as generate, so a manually
+// added match slots in alongside auto-generated ones without clashing.
+app.post('/admin/region/:id/fixtures/manual', requireLogin, requireRole('admin'), (req, res) => {
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(req.params.id);
+  const teamA = parseInt(req.body.team_a_id), teamB = parseInt(req.body.team_b_id);
+  const matchDate = (req.body.match_date || '').trim() || null;
+  if (!teamA || !teamB || teamA === teamB) return res.redirect(`/admin/region/${region.id}`);
+
+  const maxWeek = db.prepare("SELECT MAX(week) w FROM fixtures WHERE region_id=?").get(region.id).w || 0;
+  db.prepare("INSERT INTO fixtures (region_id, week, team_a_id, team_b_id, match_date, status) VALUES (?,?,?,?,?,?)")
+    .run(region.id, maxWeek + 1, teamA, teamB, matchDate, 'scheduled');
+
+  res.redirect(`/admin/region/${region.id}`);
+});
+
+// A fixture can only be removed while nothing's actually been scored against
+// it yet — once results exist, deleting the fixture would silently orphan
+// that data instead of protecting it.
+app.post('/admin/region/:id/fixtures/:fixtureId/delete', requireLogin, requireRole('admin'), (req, res) => {
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(req.params.id);
+  const fixture = db.prepare("SELECT * FROM fixtures WHERE id=? AND region_id=?").get(req.params.fixtureId, region.id);
+  if (!fixture) return res.redirect(`/admin/region/${region.id}`);
+
+  const hasResults = db.prepare("SELECT COUNT(*) c FROM category_results WHERE fixture_id=?").get(fixture.id).c
+    + db.prepare("SELECT COUNT(*) c FROM category_gate4_results WHERE fixture_id=?").get(fixture.id).c;
+
+  if (hasResults > 0) {
+    const teams = db.prepare("SELECT t.*, g.name as gym_name FROM teams t JOIN gyms g ON g.id=t.gym_id WHERE t.region_id=?").all(region.id);
+    const fixtures = db.prepare(`
+      SELECT f.*, ta.name as team_a_name, tb.name as team_b_name FROM fixtures f
+      JOIN teams ta ON ta.id=f.team_a_id JOIN teams tb ON tb.id=f.team_b_id WHERE f.region_id=? ORDER BY f.week`).all(region.id);
+    return res.render('admin-region', { title: region.name, region, teams, fixtures, error: "Can't remove a match that already has results entered." });
+  }
+
+  db.prepare("DELETE FROM judge_assignments WHERE fixture_id=?").run(fixture.id);
+  db.prepare("DELETE FROM fixture_clocks WHERE fixture_id=?").run(fixture.id);
+  db.prepare("DELETE FROM fixtures WHERE id=?").run(fixture.id);
+
+  res.redirect(`/admin/region/${region.id}`);
 });
 
 // ============ LEAGUE OPERATOR DASHBOARD (placeholder home once approved) ============

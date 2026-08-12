@@ -7,15 +7,75 @@
     <div class="section-eyebrow">Region</div>
     <h2><%= region.name %></h2>
 
+    <% if (typeof error !== 'undefined' && error) { %>
+      <div class="form-error" style="margin-top:1rem;"><%= error %></div>
+    <% } %>
+
     <h3 style="margin-top:1.6rem;font-size:1.3rem;color:var(--forest);">Teams</h3>
     <div class="table-wrap" style="margin-top:.6rem;">
       <table>
-        <tr><th>Team</th><th>Gym</th></tr>
-        <% teams.forEach(t => { %><tr><td><%= t.name %></td><td><%= t.gym_name %></td></tr><% }) %>
+        <tr><th>Team</th><th>Gym</th><th></th></tr>
+        <% teams.forEach(t => { %>
+          <tr>
+            <td><%= t.name %></td>
+            <td><%= t.gym_name %></td>
+            <td>
+              <form method="POST" action="/admin/region/<%= region.id %>/teams/<%= t.id %>/delete" onsubmit="return confirm('Remove ' + <%- JSON.stringify(t.name) %> + '? This only works if it has no roster and hasn\'t played a scored match yet.')">
+                <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Remove</button>
+              </form>
+            </td>
+          </tr>
+        <% }) %>
+        <% if (teams.length === 0) { %>
+          <tr><td colspan="3" style="color:var(--muted);text-align:center;padding:1.5rem;">No teams yet — add one below.</td></tr>
+        <% } %>
       </table>
     </div>
 
-    <h3 style="margin-top:2rem;font-size:1.3rem;color:var(--forest);">Fixtures</h3>
+    <div class="card" style="margin-top:1rem;max-width:420px;">
+      <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);font-size:1rem;margin-bottom:.6rem;">Add a Team</h4>
+      <form method="POST" action="/admin/region/<%= region.id %>/teams" style="display:flex;gap:.6rem;">
+        <input type="text" name="name" placeholder="Team name" required maxlength="80" style="flex:1;">
+        <button type="submit" class="btn btn-primary btn-sm">Add Team</button>
+      </form>
+      <p style="color:var(--muted);font-size:.8rem;margin-top:.6rem;">Creates the team directly — no gym sign-up needed first. A placeholder gym record is created behind the scenes and cleaned up automatically if you remove the team later.</p>
+    </div>
+
+    <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Schedule Matches</h3>
+    <div class="grid grid-2" style="margin-top:.8rem;">
+      <div class="card">
+        <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);font-size:1rem;margin-bottom:.6rem;">Auto-Generate</h4>
+        <form method="POST" action="/admin/region/<%= region.id %>/fixtures/generate">
+          <p style="font-size:.85rem;color:var(--muted);margin-bottom:.5rem;">Tick who's competing this round — they'll be paired in order (1v2, 3v4, ...). An odd team out gets a bye.</p>
+          <% teams.forEach(t => { %>
+            <label style="display:flex;align-items:center;gap:.5rem;font-size:.9rem;margin-bottom:.4rem;">
+              <input type="checkbox" name="team_ids" value="<%= t.id %>"> <%= t.name %>
+            </label>
+          <% }) %>
+          <label style="display:block;margin-top:.8rem;font-size:.85rem;">Match date</label>
+          <input type="date" name="match_date" style="width:100%;margin-top:.3rem;">
+          <button type="submit" class="btn btn-primary btn-sm" style="margin-top:.8rem;width:100%;">Generate Matches</button>
+        </form>
+      </div>
+      <div class="card">
+        <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);font-size:1rem;margin-bottom:.6rem;">One-Off Match</h4>
+        <form method="POST" action="/admin/region/<%= region.id %>/fixtures/manual">
+          <label style="display:block;font-size:.85rem;margin-bottom:.3rem;">Team A</label>
+          <select name="team_a_id" required style="width:100%;margin-bottom:.6rem;">
+            <% teams.forEach(t => { %><option value="<%= t.id %>"><%= t.name %></option><% }) %>
+          </select>
+          <label style="display:block;font-size:.85rem;margin-bottom:.3rem;">Team B</label>
+          <select name="team_b_id" required style="width:100%;margin-bottom:.6rem;">
+            <% teams.forEach(t => { %><option value="<%= t.id %>"><%= t.name %></option><% }) %>
+          </select>
+          <label style="display:block;font-size:.85rem;margin-bottom:.3rem;">Match date</label>
+          <input type="date" name="match_date" style="width:100%;">
+          <button type="submit" class="btn btn-primary btn-sm" style="margin-top:.8rem;width:100%;">Create Match</button>
+        </form>
+      </div>
+    </div>
+
+    <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Fixtures</h3>
     <div class="table-wrap" style="margin-top:.6rem;">
       <table>
         <tr><th>Week</th><th>Date</th><th>Fixture</th><th>Status</th><th></th></tr>
@@ -24,9 +84,17 @@
             <td>Week <%= f.week %></td><td><%= f.match_date %></td>
             <td><%= f.team_a_name %> vs <%= f.team_b_name %></td>
             <td><span class="badge <%= f.status==='complete' ? 'badge-live' : 'badge-soon' %>"><%= f.status %></span></td>
-            <td><a href="/fixture/<%= f.id %>/results" style="color:var(--forest);font-weight:700;font-size:.85rem;">View/Edit →</a></td>
+            <td style="display:flex;gap:.6rem;align-items:center;">
+              <a href="/fixture/<%= f.id %>/results" style="color:var(--forest);font-weight:700;font-size:.85rem;">View/Edit →</a>
+              <form method="POST" action="/admin/region/<%= region.id %>/fixtures/<%= f.id %>/delete" onsubmit="return confirm('Remove this match? Only works if no results have been entered yet.')">
+                <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Remove</button>
+              </form>
+            </td>
           </tr>
         <% }) %>
+        <% if (fixtures.length === 0) { %>
+          <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No fixtures yet.</td></tr>
+        <% } %>
       </table>
     </div>
 

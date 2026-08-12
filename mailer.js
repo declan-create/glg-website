@@ -209,4 +209,53 @@ ${site}`;
   return { to: user.email, subject: 'Reset your Gym League Global password', text, html: toHtml(text) };
 }
 
-module.exports = { send, mailEnabled, judgeAssignmentEmail, welcomeAthleteEmail, welcomeGymEmail, passwordResetEmail };
+function addedByGymEmail({ user, gymName, teamName, tempPassword }) {
+  const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
+  const text = `Hi ${user.first_name || 'there'},
+
+${gymName} has added you to Gym League Global — you're on ${teamName ? `the ${teamName} team` : 'their roster'}.
+
+Log in here: ${site}/login
+  Email: ${user.email}
+  Temporary password: ${tempPassword}
+
+We'd recommend changing that password once you're in — go to My Account after
+logging in, or use "Forgot Password" any time from the login page.
+
+Once you're in, you can see your results, your team, and your upcoming fixtures.
+
+See you on the floor,
+Gym League Global
+${site}`;
+  return { to: user.email, subject: `${gymName} added you to Gym League Global`, text, html: toHtml(text) };
+}
+
+function leagueApplicationReceivedEmail({ user, proposedRegion }) {
+  const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
+  const text = `Hi ${user.first_name || 'there'},
+
+Thanks for applying to run a Gym League Global region${proposedRegion ? ` (${proposedRegion})` : ''}.
+
+Your application is now with our team for review — we'll be in touch by email
+once there's a decision. No action needed from you in the meantime.
+
+Gym League Global
+${site}`;
+  return { to: user.email, subject: 'Your Gym League Global region application', text, html: toHtml(text) };
+}
+
+// Internal notifications to GLG HQ — nothing fancy, just make sure a human
+// sees every new gym, athlete, and league application without having to
+// remember to check the admin dashboard. Silently no-ops if ADMIN_NOTIFY_EMAIL
+// isn't set, same fail-soft pattern as every other email in this file.
+function adminNotifyEmail({ subject, lines }) {
+  const to = process.env.ADMIN_NOTIFY_EMAIL;
+  if (!to) return null;
+  const text = lines.join('\n');
+  return { to, subject: `[GLG] ${subject}`, text, html: toHtml(text) };
+}
+
+module.exports = {
+  send, mailEnabled, judgeAssignmentEmail, welcomeAthleteEmail, welcomeGymEmail,
+  passwordResetEmail, addedByGymEmail, leagueApplicationReceivedEmail, adminNotifyEmail,
+};
