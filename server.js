@@ -1006,6 +1006,28 @@ app.get('/judge/fixture/:fixtureId/category/:category/live', requireLogin, requi
   });
 });
 
+// Context for the Wedgetail camera counter: which exercises + team ids this
+// judge can write live rep counts against, so the counter can be pointed at
+// a real fixture/category instead of running as a disconnected prototype.
+app.get('/api/judge/fixture/:fixtureId/category/:category/context', requireLogin, requireRole('judge'), (req, res) => {
+  const fixture = judgeLiveGuard(req, res);
+  if (!fixture) return res.status(403).json({ error: 'not assigned' });
+
+  const exercises = db.prepare(`
+    SELECT e.id, e.name, g.number as gate_number, g.is_sprint_finish
+    FROM exercises e JOIN gates g ON g.id=e.gate_id
+    WHERE g.is_sprint_finish = 0
+    ORDER BY g.number, e.sort_order`).all();
+
+  res.json({
+    fixture_id: fixture.id,
+    category: req.params.category,
+    team_a: { id: fixture.team_a_id, name: fixture.team_a_name },
+    team_b: { id: fixture.team_b_id, name: fixture.team_b_name },
+    exercises,
+  });
+});
+
 // Save one exercise result from the live counter (tap counters + totals).
 app.post('/api/judge/fixture/:fixtureId/category/:category/result', requireLogin, requireRole('judge'), (req, res) => {
   const fixture = judgeLiveGuard(req, res);

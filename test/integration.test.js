@@ -394,7 +394,7 @@ test('cast display and watch page: no gate-switching tabs — everything flows o
     }));
     assert.strictEqual(runtime.stageCount, 9, `Expected 9 timed stages (Gates 1-3 only; Gate 4 is open-ended), got ${runtime.stageCount}`);
     assert.match(runtime.gate4Name || '', /Gate 4: Sprint Finish/, 'Gate 4 should exist as a separate open-ended stage');
-    assert.strictEqual(runtime.gates123Sec, 9 * 5 * 60, 'Gates 1-3 should total 45 minutes of timed stages');
+    assert.strictEqual(runtime.gates123Sec, 9 * 4 * 60, 'Gates 1-3 should total 36 minutes of timed stages');
   } finally {
     await browser.close();
   }

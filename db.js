@@ -233,7 +233,16 @@ db.prepare(`UPDATE exercises SET name='Lunges', unit='lengths',
 // to 1,500 m; snatch weights match push press; Russian twist is a med ball.
 db.prepare("UPDATE exercises SET benchmark_m=1500, benchmark_w=1500, benchmark_desc='1,500 m' WHERE name='Bike (Stationary)'").run();
 db.prepare("UPDATE exercises SET benchmark_desc='15kg(M)/10kg(W) x 30 reps alternating' WHERE name='DB Snatch'").run();
-db.prepare("UPDATE exercises SET benchmark_desc='10kg(M)/6kg(W) med ball x 30 each side' WHERE name='Russian Twist'").run();
+
+// Migration: benchmarks aligned to the published Competitor Benchmark Card
+// (16 Aug 2026) — weight targets on these four adjusted down, and Lunges
+// confirmed as sandbag (not med ball). Reps/lengths/cal targets that already
+// matched the card are left as-is; only the mismatched ones move.
+db.prepare("UPDATE exercises SET benchmark_desc='20kg(M)/10kg(W) sandbag — 10 x 8m lengths (80 m)' WHERE name='Lunges'").run();
+db.prepare("UPDATE exercises SET benchmark_desc='20kg(M)/15kg(W) x 30 reps' WHERE name='Goblet Squat (DB)'").run();
+db.prepare("UPDATE exercises SET benchmark_m=50, benchmark_w=35, benchmark_desc='50cal(M)/35cal(W)' WHERE name='Assault Bike'").run();
+db.prepare("UPDATE exercises SET benchmark_desc='12.5kg(M)/8kg(W) x 30 reps' WHERE name='DB Push Press'").run();
+db.prepare("UPDATE exercises SET benchmark_desc='9kg(M)/6kg(W) med ball x 30 each side' WHERE name='Russian Twist'").run();
 
 const jaCols = db.prepare("PRAGMA table_info(judge_assignments)").all().map(c => c.name);
 if (jaCols.includes('gate_id')) {
@@ -346,18 +355,18 @@ function seed() {
   // Gate 1
   insEx.run(g1,"Ski Erg","m",800,800,"800 m",0,1);
   insEx.run(g1,"Trap Bar Deadlift","reps",30,30,"84kg(M)/54kg(W) x 30 reps benchmark",0,2);
-  insEx.run(g1,"Lunges","lengths",10,10,"20kg(M)/10kg(W) med ball — 10 x 8m lengths (80 m)",0,3);
+  insEx.run(g1,"Lunges","lengths",10,10,"20kg(M)/10kg(W) sandbag — 10 x 8m lengths (80 m)",0,3);
   // Gate 2
   insEx.run(g2,"Bike (Stationary)","m",1500,1500,"1,500 m",0,1);
-  insEx.run(g2,"Goblet Squat (DB)","reps",30,30,"25kg(M)/17.5kg(W) x 30 reps",0,2);
+  insEx.run(g2,"Goblet Squat (DB)","reps",30,30,"20kg(M)/15kg(W) x 30 reps",0,2);
   insEx.run(g2,"Burpee Box Jump-Overs","reps",40,40,"60cm box x 40 reps",0,3);
   // Gate 3
-  insEx.run(g3,"Assault Bike","cal",80,50,"80cal(M)/50cal(W)",0,1);
-  insEx.run(g3,"DB Push Press","reps",30,30,"15kg(M)/10kg(W) x 30 reps",0,2);
+  insEx.run(g3,"Assault Bike","cal",50,35,"50cal(M)/35cal(W)",0,1);
+  insEx.run(g3,"DB Push Press","reps",30,30,"12.5kg(M)/8kg(W) x 30 reps",0,2);
   insEx.run(g3,"DB Snatch","reps",30,30,"15kg(M)/10kg(W) x 30 reps alternating",0,3);
   // Gate 4 (sprint finish - completion + win based, not per-exercise points)
   insEx.run(g4,"Wall Balls","reps",50,50,"6kg(M)/4kg(W) x 50 reps",0,1);
-  insEx.run(g4,"Russian Twist","reps",30,30,"10kg(M)/6kg(W) med ball x 30 each side",0,2);
+  insEx.run(g4,"Russian Twist","reps",30,30,"9kg(M)/6kg(W) med ball x 30 each side",0,2);
   insEx.run(g4,"Row 500m","sec",null,null,"500m row, first to finish wins",1,3);
 
   // Fixture schedule — driven by EVENT_CONFIG.eventMode:

@@ -110,6 +110,29 @@
     <label>Camera</label>
     <select id="cameraSelect"><option value="">Default camera</option></select>
   </div>
+  <div class="field">
+    <label>Fixture ID</label>
+    <input id="fixtureId" type="number" placeholder="e.g. 12" style="width:6rem;" />
+  </div>
+  <div class="field">
+    <label>Category</label>
+    <select id="categorySelect">
+      <option value="mens_singles">Men's Singles</option>
+      <option value="womens_singles">Women's Singles</option>
+      <option value="mens_doubles">Men's Doubles</option>
+      <option value="womens_doubles">Women's Doubles</option>
+      <option value="mixed_doubles">Mixed Doubles</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>Exercise (live scoring)</label>
+    <select id="exerciseSelect" style="width:13rem;"><option value="">Not connected</option></select>
+  </div>
+  <button class="btn-outline" id="connectBtn">Connect Live Scoring</button>
+  <div class="field">
+    <label>Live scoring</label>
+    <span id="liveSyncStatus" style="font-size:.85rem;color:var(--slate);padding:.4rem 0;">not connected — counts stay local</span>
+  </div>
   <button class="btn-main" id="startBtn">Start Camera</button>
   <button class="btn-main" id="goBtn" style="display:none;background:var(--amber);" disabled>BOTH READY — GO</button>
   <button class="btn-outline" id="resetBtn">Reset for Next Station</button>
@@ -122,7 +145,7 @@
 
 <div class="stage">
   <div class="lane" data-lane="A">
-    <div class="lane-head"><span class="tag">GADIGAL</span><span class="conf" data-role="conf">tracking: —</span></div>
+    <div class="lane-head"><span class="tag" data-role="tag">Lane A</span><span class="conf" data-role="conf">tracking: —</span></div>
     <div class="video-wrap"><canvas data-role="canvas"></canvas></div>
     <div class="phase-strip" data-role="phase">waiting for camera…</div>
     <div class="lane-foot">
@@ -135,7 +158,7 @@
   </div>
 
   <div class="lane" data-lane="B">
-    <div class="lane-head"><span class="tag">WANGAL</span><span class="conf" data-role="conf">tracking: —</span></div>
+    <div class="lane-head"><span class="tag" data-role="tag">Lane B</span><span class="conf" data-role="conf">tracking: —</span></div>
     <div class="video-wrap"><canvas data-role="canvas"></canvas></div>
     <div class="phase-strip" data-role="phase">waiting for camera…</div>
     <div class="lane-foot">
@@ -170,9 +193,11 @@
         counting pauses automatically rather than guessing.</li>
     <li><b>NO REP</b> removes the last counted rep for that lane — same action as the "−" button already in the Live Counter
         screen. <b>+1</b> adds one back if the camera missed a genuine rep.</li>
-    <li>Integration point: each auto-count or NO-REP tap here is exactly the payload the app's existing
-        <code>/api/judge/fixture/:id/category/:cat/result</code> endpoint expects. Wiring this prototype into the live
-        judge screen is the next step once the counting itself is proven reliable at the venue — not done here.</li>
+    <li><b>Live scoring:</b> enter the Fixture ID and category above and tap <b>Connect Live Scoring</b> (you must be
+        logged in as the judge assigned to that category). Each auto-count, <b>+1</b>, or <b>NO REP</b> then writes
+        straight to the same <code>/api/judge/fixture/:id/category/:cat/result</code> endpoint the Live Counter screen
+        uses — so the scoreboard, Watch Live, and Cast Display all update as this camera counts, not after the fact.
+        Leave it disconnected to run this as a local-only rep counter.</li>
     <li><b>Recording:</b> from <b>BOTH READY — GO</b> until <b>Reset for Next Station</b>, the raw camera feed (both lanes,
         exactly what's on screen) is recorded and, on reset, uploaded for coaches to review afterwards. Reps whose
         bottom position was close to the live cutoff — not necessarily bad, just close — get flagged with a timestamp
@@ -233,6 +258,8 @@ class Lane {
     this.bottomMetricAtHit = null; // the angle (or floor delta) captured at the instant "bottom" triggered, for this rep in progress
     this.bottomConfAtHit = null;   // tracking confidence at that same instant
     this.repEvents = []; // full per-rep log for this set: {rep, atSeconds, mode, bottomMetric, lockoutAngle, conf, flagged, reason}
+    this.teamId = null; // set once Live Scoring is connected — which team this lane writes results for
+    this._syncTimer = null; // debounce handle for syncCount()
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
@@ -240,15 +267,34 @@ class Lane {
       // the removed rep is still in repEvents (it's the raw record of what the
       // camera saw) — just drop the most recent one so the log matches the count
       this.repEvents = this.repEvents.filter(r => r.rep <= this.reps);
+      this.syncCount();
     });
     el.querySelector('[data-role=plus]').addEventListener('click', () => {
       this.reps += 1;
       this.countEl.textContent = this.reps;
       this.repEvents.push({ rep: this.reps, atSeconds: getRecSeconds(), mode: CFG.bottomMode(), bottomMetric: null, lockoutAngle: null, conf: null, flagged: false, reason: 'manually added (+1) by judge' });
+      this.syncCount();
     });
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; }
+  // Pushes this lane's current rep count to the live scoring endpoint, if
+  // connected. Debounced so a fast burst of reps (or a quick NO REP right
+  // after a count) collapses into one request rather than one per rep.
+  syncCount(){
+    if (!LIVE.connected || !LIVE.exerciseId || !this.teamId) return;
+    clearTimeout(this._syncTimer);
+    const reps = this.reps;
+    this._syncTimer = setTimeout(async () => {
+      try {
+        await fetch(`/api/judge/fixture/${LIVE.fixtureId}/category/${LIVE.category}/result`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ exercise_id: LIVE.exerciseId, team_id: this.teamId, raw_value: reps }),
+        });
+      } catch (e) { /* next rep's sync (or the interval retry below) will catch it back up */ }
+    }, 250);
+  }
+
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
 
   // Grabs this lane's half of the shared video — but rather than a rigid
   // static crop, each lane maintains its own "view window" that smoothly
@@ -474,6 +520,7 @@ class Lane {
       this.phaseEl.textContent = `REP COUNTED — lockout at ${angle.toFixed(0)}°`;
       this.phaseEl.classList.add('hit');
       this.logRepEvent({ lockoutAngle: angle, mode });
+      this.syncCount();
     } else if (this.atBottom){
       this.phaseEl.textContent = `ascending (${angle.toFixed(0)}°)`;
       this.phaseEl.classList.remove('hit');
@@ -491,6 +538,69 @@ let detector, video, running = false, cameraStream = null;
 const laneA = new Lane(document.querySelector('[data-lane=A]'));
 const laneB = new Lane(document.querySelector('[data-lane=B]'));
 laneA.crop = 'left'; laneB.crop = 'right';
+
+// ---- Live scoring: wires this counter into the same result endpoint the
+// judge's Live Counter phone screen uses, so a rep counted here shows up in
+// the running scoreboard (judge screen, Watch Live, Cast Display) immediately
+// instead of being re-entered by hand later. Fully optional — with no
+// Fixture ID/category connected, this page just runs as a local counter. ----
+const LIVE = { connected: false, fixtureId: null, category: null, exerciseId: null };
+const liveStatusEl = document.getElementById('liveSyncStatus');
+const exerciseSelectEl = document.getElementById('exerciseSelect');
+
+// prefill from a deep link, e.g. wedgetail.html?fixture=12&category=mixed_doubles
+(function prefillFromQuery(){
+  const q = new URLSearchParams(location.search);
+  if (q.get('fixture')) document.getElementById('fixtureId').value = q.get('fixture');
+  if (q.get('category')) document.getElementById('categorySelect').value = q.get('category');
+})();
+
+async function connectLiveScoring(){
+  const fixtureId = parseInt(document.getElementById('fixtureId').value);
+  const category = document.getElementById('categorySelect').value;
+  if (!fixtureId){ liveStatusEl.textContent = 'enter a Fixture ID first'; liveStatusEl.style.color = 'var(--danger)'; return; }
+  try {
+    const res = await fetch(`/api/judge/fixture/${fixtureId}/category/${category}/context`);
+    if (!res.ok) {
+      liveStatusEl.textContent = res.status === 403
+        ? "not connected — you're not assigned to judge this category"
+        : 'not connected — could not reach the fixture';
+      liveStatusEl.style.color = 'var(--danger)';
+      LIVE.connected = false;
+      return;
+    }
+    const ctx = await res.json();
+    LIVE.connected = true;
+    LIVE.fixtureId = ctx.fixture_id;
+    LIVE.category = ctx.category;
+    laneA.teamId = ctx.team_a.id;
+    laneB.teamId = ctx.team_b.id;
+    document.querySelector('[data-lane=A] [data-role=tag]').textContent = ctx.team_a.name;
+    document.querySelector('[data-lane=B] [data-role=tag]').textContent = ctx.team_b.name;
+
+    exerciseSelectEl.innerHTML = ctx.exercises.map(e => `<option value="${e.id}">Gate ${e.gate_number}: ${e.name}</option>`).join('');
+    if (ctx.exercises.length) {
+      LIVE.exerciseId = ctx.exercises[0].id;
+      document.getElementById('exerciseName').value = ctx.exercises[0].name;
+    }
+    liveStatusEl.textContent = `connected — writing live to Fixture ${ctx.fixture_id}`;
+    liveStatusEl.style.color = 'var(--lime)';
+  } catch (e) {
+    liveStatusEl.textContent = 'not connected — network error';
+    liveStatusEl.style.color = 'var(--danger)';
+    LIVE.connected = false;
+  }
+}
+document.getElementById('connectBtn').addEventListener('click', connectLiveScoring);
+// Safety net: re-push both lanes' current counts periodically in case a tap's
+// own sync was dropped by a bad connection — same "retry anything stuck"
+// pattern the Live Counter screen uses.
+setInterval(() => { laneA.syncCount(); laneB.syncCount(); }, 5000);
+exerciseSelectEl.addEventListener('change', () => {
+  LIVE.exerciseId = parseInt(exerciseSelectEl.value) || null;
+  const opt = exerciseSelectEl.selectedOptions[0];
+  if (opt) document.getElementById('exerciseName').value = opt.textContent.replace(/^Gate \d+: /, '');
+});
 
 // ---- Recording: raw camera feed, from GO to Reset, uploaded for coach review ----
 let mediaRecorder = null, recordedChunks = [], recStartPerf = null;
