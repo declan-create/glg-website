@@ -75,10 +75,26 @@ CREATE TABLE IF NOT EXISTS gyms (
 CREATE TABLE IF NOT EXISTS teams (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   name TEXT NOT NULL,
-  gym_id INTEGER REFERENCES gyms(id),
+  gym_id INTEGER REFERENCES gyms(id), -- NULL = captain-run team with no gym yet
   region_id INTEGER REFERENCES regions(id),
   division TEXT DEFAULT 'Open',
+  captain_user_id INTEGER REFERENCES users(id), -- set when a team is created via the "I'm starting a team" signup path. Kept even after a gym is attached (Team Captain + Gym Admin manage jointly).
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+-- A captain's request for their gym-less team to be attached to an existing
+-- (or brand-new-by-name) gym. Deliberately a request, not a direct write —
+-- mirrors the league_operator approval pattern — so a captain can't silently
+-- attach their roster to a gym without that gym's consent.
+CREATE TABLE IF NOT EXISTS gym_attachment_requests (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  team_id INTEGER NOT NULL REFERENCES teams(id),
+  gym_id INTEGER REFERENCES gyms(id), -- NULL when requested_gym_name didn't match an existing gym
+  requested_gym_name TEXT,
+  requested_by INTEGER NOT NULL REFERENCES users(id),
+  status TEXT DEFAULT 'pending', -- 'pending' | 'approved' | 'rejected'
+  created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+  decided_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS athletes (
@@ -243,6 +259,26 @@ db.prepare("UPDATE exercises SET benchmark_desc='20kg(M)/15kg(W) x 30 reps' WHER
 db.prepare("UPDATE exercises SET benchmark_m=50, benchmark_w=35, benchmark_desc='50cal(M)/35cal(W)' WHERE name='Assault Bike'").run();
 db.prepare("UPDATE exercises SET benchmark_desc='12.5kg(M)/8kg(W) x 30 reps' WHERE name='DB Push Press'").run();
 db.prepare("UPDATE exercises SET benchmark_desc='9kg(M)/6kg(W) med ball x 30 each side' WHERE name='Russian Twist'").run();
+
+// Migration: Team Captain feature — captains manage a team without needing a
+// gym. Column added via ALTER for DBs created before this feature existed;
+// the CREATE TABLE above already includes it for brand-new installs.
+const teamsCols = db.prepare("PRAGMA table_info(teams)").all().map(c => c.name);
+if (!teamsCols.includes('captain_user_id')) {
+  db.exec(`ALTER TABLE teams ADD COLUMN captain_user_id INTEGER REFERENCES users(id);`);
+}
+
+// Team names must be unique within a region — previously unenforced for both
+// gym-created and (new) captain-created teams. A partial/unique index rather
+// than an app-level-only check so it holds even under concurrent signups.
+// Wrapped in try/catch: if existing data already has a duplicate name in some
+// region, creating the index would throw and crash startup — instead we log
+// and skip, so this only starts enforcing once duplicates are cleaned up.
+try {
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_region ON teams(region_id, name COLLATE NOCASE);`);
+} catch (e) {
+  console.error('[migration] Skipped team-name uniqueness index — existing duplicate team name(s) in a region. Resolve duplicates, then restart to enforce:', e.message);
+}
 
 const jaCols = db.prepare("PRAGMA table_info(judge_assignments)").all().map(c => c.name);
 if (jaCols.includes('gate_id')) {

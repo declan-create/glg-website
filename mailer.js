@@ -244,6 +244,99 @@ ${site}`;
   return { to: user.email, subject: 'Your Gym League Global region application', text, html: toHtml(text) };
 }
 
+function captainTeamCreatedEmail({ user, teamName, regionName }) {
+  const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
+  const text = `Hi ${user.first_name || 'there'},
+
+You're signed up with Gym League Global in ${regionName || 'your region'}, and
+your team "${teamName}" is live.
+
+As team captain, you can:
+  1. Add teammates directly, or share your team name so they can pick it
+     during their own sign-up — ${site}/signup/athlete
+  2. Assign each member's competing category once your roster is in.
+  3. Optionally request to attach your team to an existing gym from your
+     team page — the gym will need to approve it before it's linked.
+
+You don't need a gym to compete — you can run things from here on your own
+for as long as that works for you.
+
+Your account email (${user.email}) is what you'll always use to log in.
+
+See you on the floor,
+Gym League Global
+${site}`;
+  return { to: user.email, subject: `Your team "${teamName}" is set up on Gym League Global`, text, html: toHtml(text) };
+}
+
+function gymAttachmentRequestEmail({ gymAdmin, gymName, teamName, captainName, captainEmail }) {
+  const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
+  const text = `Hi ${gymAdmin.first_name || 'there'},
+
+${captainName} (${captainEmail}) has requested to attach their team,
+"${teamName}", to ${gymName} on Gym League Global.
+
+Review and approve or reject it from your dashboard:
+${site}/gym
+
+If approved, you and the team captain will both be able to manage that
+team's roster going forward.
+
+Gym League Global
+${site}`;
+  return { to: gymAdmin.email, subject: `${teamName} wants to join ${gymName} on Gym League Global`, text, html: toHtml(text) };
+}
+
+function gymAttachmentDecisionEmail({ user, teamName, gymName, approved }) {
+  const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
+  const text = approved
+    ? `Hi ${user.first_name || 'there'},
+
+Good news — ${gymName} approved your team "${teamName}"'s request to join them.
+
+You'll keep managing your team exactly as before; ${gymName}'s admin can now
+see and help manage it too.
+
+${site}/gym/team
+
+Gym League Global
+${site}`
+    : `Hi ${user.first_name || 'there'},
+
+${gymName} wasn't able to approve your team "${teamName}"'s request to join
+them this time. Your team is unaffected and still fully yours to manage —
+you're welcome to request a different gym any time from your team page.
+
+${site}/gym/team
+
+Gym League Global
+${site}`;
+  return { to: user.email, subject: approved ? `${gymName} approved your team's request` : `Update on your team's request to join ${gymName}`, text, html: toHtml(text) };
+}
+
+function gymJudgesCreatedEmail({ user, gymName, judges, tempPassword }) {
+  const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
+  const judgeLines = judges.map(j => `  - ${j.label}: ${j.email}`).join('\n');
+  const text = `Hi ${user.first_name || 'there'},
+
+${gymName}'s 5 category-judge logins are ready — one per competing category.
+Every one of them delivers mail straight back to this inbox (${user.email}),
+so there's nothing extra to check.
+
+${judgeLines}
+
+Shared temporary password for all 5: ${tempPassword}
+
+Hand the relevant login to whoever's judging each category on the day, or
+just log into each yourself from ${site}/login to enter results as that
+category comes up. We'd recommend changing the password from My Account
+once you're in.
+
+Gym League Global
+${site}`;
+  return { to: user.email, subject: `${gymName}'s judge logins are ready`, text, html: toHtml(text) };
+}
+
 // Internal notifications to GLG HQ — nothing fancy, just make sure a human
 // sees every new gym, athlete, and league application without having to
 // remember to check the admin dashboard. Silently no-ops if ADMIN_NOTIFY_EMAIL
@@ -258,4 +351,6 @@ function adminNotifyEmail({ subject, lines }) {
 module.exports = {
   send, mailEnabled, judgeAssignmentEmail, welcomeAthleteEmail, welcomeGymEmail,
   passwordResetEmail, addedByGymEmail, leagueApplicationReceivedEmail, adminNotifyEmail,
+  captainTeamCreatedEmail, gymAttachmentRequestEmail, gymAttachmentDecisionEmail,
+  gymJudgesCreatedEmail,
 };
