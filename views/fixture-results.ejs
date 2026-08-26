@@ -1,6 +1,7 @@
 <section class="section">
   <div class="container">
     <% if (query.saved) { %><div class="form-success">Results saved and scores recalculated.</div><% } %>
+    <% if (!canEditResults) { %><div class="form-error" style="background:#eef3ff;border-color:#8fa8d8;color:#2b4a7a;">You can view this fixture's results, but only judges and GLG Admin can enter or change scores.</div><% } %>
     <div class="section-eyebrow">Week <%= fixture.week %></div>
     <h2><%= fixture.team_a_name %> vs <%= fixture.team_b_name %></h2>
     <p class="lede">Enter each category's result — for Singles that's the one athlete's number; for Doubles/Mixed, enter the pair's single combined performance (total reps counted for the pair), exactly as called on the day. Points are calculated automatically: benchmark hit, and margin over the same category on the opposing team.</p>
@@ -33,13 +34,13 @@
                       <td>
                         <% const rA = resultMap[fixture.team_a_id+'_'+ex.id+'_'+cat]; %>
                         <input type="number" step="0.1" style="width:110px;" name="result_<%= fixture.team_a_id %>_<%= ex.id %>_<%= cat %>"
-                          value="<%= rA ? rA.raw_value : '' %>" placeholder="<%= ex.unit %>" <%= (namesA[cat]||[]).length ? '' : 'disabled' %>>
+                          value="<%= rA ? rA.raw_value : '' %>" placeholder="<%= ex.unit %>" <%= ((namesA[cat]||[]).length && canEditResults) ? '' : 'disabled' %>>
                         <% if (rA) { %><span class="pill" style="font-size:.6rem;"><%= rA.points %>pt</span><% } %>
                       </td>
                       <td>
                         <% const rB = resultMap[fixture.team_b_id+'_'+ex.id+'_'+cat]; %>
                         <input type="number" step="0.1" style="width:110px;" name="result_<%= fixture.team_b_id %>_<%= ex.id %>_<%= cat %>"
-                          value="<%= rB ? rB.raw_value : '' %>" placeholder="<%= ex.unit %>" <%= (namesB[cat]||[]).length ? '' : 'disabled' %>>
+                          value="<%= rB ? rB.raw_value : '' %>" placeholder="<%= ex.unit %>" <%= ((namesB[cat]||[]).length && canEditResults) ? '' : 'disabled' %>>
                         <% if (rB) { %><span class="pill" style="font-size:.6rem;"><%= rB.points %>pt</span><% } %>
                       </td>
                     </tr>
@@ -66,19 +67,19 @@
                     <td>
                       <% const gA = g4Map[fixture.team_a_id+'_'+cat]; %>
                       <label style="display:flex;align-items:center;gap:.4rem;font-size:.72rem;text-transform:none;letter-spacing:0;font-weight:500;margin:0;">
-                        <input type="checkbox" name="g4_<%= fixture.team_a_id %>_<%= cat %>_completed" <%= gA && gA.completed ? 'checked' : '' %> style="width:auto;" <%= (namesA[cat]||[]).length ? '' : 'disabled' %>> Completed
+                        <input type="checkbox" name="g4_<%= fixture.team_a_id %>_<%= cat %>_completed" <%= gA && gA.completed ? 'checked' : '' %> style="width:auto;" <%= ((namesA[cat]||[]).length && canEditResults) ? '' : 'disabled' %>> Completed
                       </label>
                       <input type="number" step="0.1" style="width:90px;margin-top:.3rem;" name="g4_<%= fixture.team_a_id %>_<%= cat %>_time" placeholder="sec"
-                        value="<%= gA ? gA.total_time_sec : '' %>" <%= (namesA[cat]||[]).length ? '' : 'disabled' %>>
+                        value="<%= gA ? gA.total_time_sec : '' %>" <%= ((namesA[cat]||[]).length && canEditResults) ? '' : 'disabled' %>>
                       <% if (gA) { %><span class="pill" style="font-size:.6rem;"><%= gA.points %>pt</span><% } %>
                     </td>
                     <td>
                       <% const gB = g4Map[fixture.team_b_id+'_'+cat]; %>
                       <label style="display:flex;align-items:center;gap:.4rem;font-size:.72rem;text-transform:none;letter-spacing:0;font-weight:500;margin:0;">
-                        <input type="checkbox" name="g4_<%= fixture.team_b_id %>_<%= cat %>_completed" <%= gB && gB.completed ? 'checked' : '' %> style="width:auto;" <%= (namesB[cat]||[]).length ? '' : 'disabled' %>> Completed
+                        <input type="checkbox" name="g4_<%= fixture.team_b_id %>_<%= cat %>_completed" <%= gB && gB.completed ? 'checked' : '' %> style="width:auto;" <%= ((namesB[cat]||[]).length && canEditResults) ? '' : 'disabled' %>> Completed
                       </label>
                       <input type="number" step="0.1" style="width:90px;margin-top:.3rem;" name="g4_<%= fixture.team_b_id %>_<%= cat %>_time" placeholder="sec"
-                        value="<%= gB ? gB.total_time_sec : '' %>" <%= (namesB[cat]||[]).length ? '' : 'disabled' %>>
+                        value="<%= gB ? gB.total_time_sec : '' %>" <%= ((namesB[cat]||[]).length && canEditResults) ? '' : 'disabled' %>>
                       <% if (gB) { %><span class="pill" style="font-size:.6rem;"><%= gB.points %>pt</span><% } %>
                     </td>
                   </tr>
@@ -89,15 +90,19 @@
         <% } %>
       <% }) %>
 
-      <button type="submit" class="btn btn-primary" style="margin-top:2rem;">Save Results & Recalculate Scores</button>
+      <% if (canEditResults) { %>
+        <button type="submit" class="btn btn-primary" style="margin-top:2rem;">Save Results & Recalculate Scores</button>
+      <% } %>
     </form>
 
-    <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Clear Results</h3>
-    <p class="lede">Wipes every score for this fixture — all categories, all exercises, and Gate 4 — and resets both team totals to zero. Use this to clear test data before a real event. Judge assignments and the clock are not affected.</p>
-    <form method="POST" action="/fixture/<%= fixture.id %>/clear-results"
-          onsubmit="return confirm('Delete ALL scores for this fixture? This cannot be undone.');">
-      <button type="submit" class="btn btn-outline" style="border-color:#d64545;color:#d64545;">Clear All Results</button>
-    </form>
+    <% if (canEditResults) { %>
+      <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Clear Results</h3>
+      <p class="lede">Wipes every score for this fixture — all categories, all exercises, and Gate 4 — and resets both team totals to zero. Use this to clear test data before a real event. Judge assignments and the clock are not affected.</p>
+      <form method="POST" action="/fixture/<%= fixture.id %>/clear-results"
+            onsubmit="return confirm('Delete ALL scores for this fixture? This cannot be undone.');">
+        <button type="submit" class="btn btn-outline" style="border-color:#d64545;color:#d64545;">Clear All Results</button>
+      </form>
+    <% } %>
 
     <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Judge Assignments</h3>
     <p class="lede">Assign a judge to a participant group (category) — they follow that category through all 12 exercises, counting reps for both teams, and can only enter scores for their own category. If the email below isn't an existing judge account yet, one is created automatically — just fill in their name too.</p>

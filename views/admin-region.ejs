@@ -14,12 +14,14 @@
     <h3 style="margin-top:1.6rem;font-size:1.3rem;color:var(--forest);">Teams</h3>
     <div class="table-wrap" style="margin-top:.6rem;">
       <table>
-        <tr><th>Team</th><th>Gym</th><th></th></tr>
+        <tr><th>Team</th><th>Division</th><th>Gym</th><th></th></tr>
         <% teams.forEach(t => { %>
           <tr>
-            <td><%= t.name %></td>
+            <td><input type="text" name="name" value="<%= t.name %>" required maxlength="80" form="editteam<%= t.id %>" style="width:100%;"></td>
+            <td><input type="text" name="division" value="<%= t.division || 'Open' %>" maxlength="40" form="editteam<%= t.id %>" style="width:100px;"></td>
             <td><%= t.gym_name %></td>
-            <td>
+            <td style="display:flex;gap:.5rem;">
+              <button type="submit" form="editteam<%= t.id %>" class="btn btn-outline btn-sm">Save</button>
               <form method="POST" action="/admin/region/<%= region.id %>/teams/<%= t.id %>/delete" onsubmit="return confirm('Remove ' + <%- JSON.stringify(t.name) %> + '? This only works if it has no roster and hasn\'t played a scored match yet.')">
                 <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Remove</button>
               </form>
@@ -27,10 +29,13 @@
           </tr>
         <% }) %>
         <% if (teams.length === 0) { %>
-          <tr><td colspan="3" style="color:var(--muted);text-align:center;padding:1.5rem;">No teams yet — add one below.</td></tr>
+          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem;">No teams yet — add one below.</td></tr>
         <% } %>
       </table>
     </div>
+    <% teams.forEach(t => { %>
+      <form id="editteam<%= t.id %>" method="POST" action="/admin/region/<%= region.id %>/teams/<%= t.id %>/edit"></form>
+    <% }) %>
 
     <div class="card" style="margin-top:1rem;max-width:420px;">
       <h4 style="font-family:'Barlow Condensed',sans-serif;text-transform:uppercase;color:var(--forest);font-size:1rem;margin-bottom:.6rem;">Add a Team</h4>

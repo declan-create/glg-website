@@ -1,21 +1,29 @@
 <div class="dash-shell">
   <div class="dash-side">
-    <a href="/gym">Dashboard</a>
-    <a href="/gym/fixtures">Fixtures</a>
+    <a href="<%= gym ? '/gym' : '/profile' %>">Dashboard</a>
+    <% if (gym) { %><a href="/gym/fixtures">Fixtures</a><% } %>
     <a href="/account">My Account</a>
     <a href="/guide/gym">Gym Guide</a>
   </div>
   <div class="dash-main">
-    <div class="section-eyebrow"><%= gym.name %></div>
+    <div class="section-eyebrow"><%= gym ? gym.name : 'Captain-run team — no gym yet' %></div>
     <h2><%= team.name %></h2>
+    <% if (isCaptain && gym) { %><p class="lede" style="margin-top:-.5rem;">You're this team's captain — <%= gym.name %>'s admin can also manage this roster.</p><% } %>
 
+    <% if (welcome) { %><div class="form-success">Your team is set up! Add teammates below, or request a gym further down whenever you're ready.</div><% } %>
     <% if (query.saved) { %><div class="form-success">Member details updated.</div><% } %>
     <% if (query.added) { %><div class="form-success">New member added to the team.</div><% } %>
+    <% if (query.requested) { %><div class="form-success">Your request has been sent — you'll get an email once it's decided.</div><% } %>
+    <% if (query.teamsaved) { %><div class="form-success">Team details updated.</div><% } %>
+    <% if (query.error === 'teamnametaken') { %><div class="form-error">Another team in your region already has that name.</div><% } %>
     <% if (query.error === 'email') { %><div class="form-error">Please enter a valid email address.</div><% } %>
     <% if (query.error === 'emailtaken') { %><div class="form-error">That email is already in use by another account.</div><% } %>
-    <% if (query.error === 'name') { %><div class="form-error">Please enter a valid first name.</div><% } %>
+    <% if (query.error === 'name') { %><div class="form-error">Please enter a valid name.</div><% } %>
     <% if (query.error === 'gender') { %><div class="form-error">Please select a gender.</div><% } %>
     <% if (query.error === 'category') { %><div class="form-error">Please select a valid category.</div><% } %>
+    <% if (query.error === 'nogym') { %><div class="form-error">Please search for a gym or type a new gym name.</div><% } %>
+    <% if (query.error === 'pendingexists') { %><div class="form-error">You already have a pending request — wait for a decision before sending another.</div><% } %>
+    <% if (query.error === 'alreadyhasgym') { %><div class="form-error">This team is already attached to a gym.</div><% } %>
     <% if (newPassword) { %>
       <div class="form-success">
         New password set for this member: <strong style="font-family:'Roboto Mono',monospace;font-size:1rem;"><%= newPassword %></strong>
@@ -23,43 +31,67 @@
       </div>
     <% } %>
 
+    <h3 style="margin-top:1.6rem;font-size:1.3rem;color:var(--forest);">Team Details</h3>
+    <div class="card">
+      <form method="POST" action="/gym/team/<%= team.id %>/edit" style="display:grid;grid-template-columns:2fr 1fr auto;gap:.7rem;align-items:end;">
+        <div>
+          <label style="margin-top:0;">Team Name</label>
+          <input type="text" name="name" value="<%= team.name %>" required maxlength="80">
+        </div>
+        <div>
+          <label style="margin-top:0;">Division</label>
+          <input type="text" name="division" value="<%= team.division || 'Open' %>" maxlength="40">
+        </div>
+        <button type="submit" class="btn btn-outline btn-sm">Save</button>
+      </form>
+    </div>
+
+
     <h3 style="margin-top:1.6rem;font-size:1.3rem;color:var(--forest);">Roster (<%= roster.length %>)</h3>
-    <p class="lede">Most athletes will sign up themselves and you'll pick them up from the unassigned pool on your dashboard — but you can also add or edit a member directly here (handy before everyone's signed up, or to fix a typo). Every member needs a category assigned before results can be entered for them.</p>
+    <p class="lede">Most athletes will sign up themselves and you'll pick them up from the unassigned pool on your dashboard — but you can also add or edit a member directly here (handy before everyone's signed up, or to fix a typo). Every member needs a category assigned before results can be entered for them. Edit as many rows as you like, then hit <strong>Save All Changes</strong> once at the bottom — you don't need to save each row separately.</p>
+
+    <% if (query.batchErrors) { %>
+      <div class="form-error">
+        <%= query.batchSaved %> member(s) saved. The rest had problems and weren't saved: <%= query.batchErrors %>
+      </div>
+    <% } %>
 
     <% if (roster.length === 0) { %>
       <div class="card" style="text-align:center;color:var(--muted);padding:2rem;">No members on this team yet — add one below, or assign someone from your dashboard's unassigned pool.</div>
     <% } %>
 
-    <% roster.forEach(r => { %>
+    <form id="rosterBatchForm" method="POST" action="/gym/team/<%= team.id %>/update-members"></form>
+
+    <% roster.forEach((r, i) => { %>
       <div class="card" style="margin-top:.8rem;">
-        <form method="POST" action="/gym/team/<%= team.id %>/update-member" style="display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr .7fr 1.3fr auto;gap:.7rem;align-items:end;">
-          <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr .7fr 1.3fr;gap:.7rem;align-items:end;">
+          <input type="hidden" name="members[<%= i %>][athlete_id]" value="<%= r.athlete_id %>" form="rosterBatchForm">
           <div>
             <label style="margin-top:0;">First Name</label>
-            <input type="text" name="first_name" value="<%= r.first_name %>" required>
+            <input type="text" name="members[<%= i %>][first_name]" value="<%= r.first_name %>" required form="rosterBatchForm">
           </div>
           <div>
             <label style="margin-top:0;">Last Name</label>
-            <input type="text" name="last_name" value="<%= r.last_name %>">
+            <input type="text" name="members[<%= i %>][last_name]" value="<%= r.last_name %>" form="rosterBatchForm">
           </div>
           <div>
             <label style="margin-top:0;">Email</label>
-            <input type="email" name="email" value="<%= r.email %>" required>
+            <input type="email" name="members[<%= i %>][email]" value="<%= r.email %>" required form="rosterBatchForm">
           </div>
           <div>
             <label style="margin-top:0;">Phone</label>
-            <input type="text" name="phone" value="<%= r.phone || '' %>">
+            <input type="text" name="members[<%= i %>][phone]" value="<%= r.phone || '' %>" form="rosterBatchForm">
           </div>
           <div>
             <label style="margin-top:0;">Gender</label>
-            <select name="gender">
+            <select name="members[<%= i %>][gender]" form="rosterBatchForm">
               <option value="M" <%= r.gender==='M'?'selected':'' %>>M</option>
               <option value="F" <%= r.gender==='F'?'selected':'' %>>F</option>
             </select>
           </div>
           <div>
             <label style="margin-top:0;">Category</label>
-            <select name="category">
+            <select name="members[<%= i %>][category]" form="rosterBatchForm">
               <option value="" <%= !r.category ? 'selected' : '' %>>— Unassigned —</option>
               <option value="mens_singles" <%= r.category==='mens_singles'?'selected':'' %>>Men's Singles</option>
               <option value="womens_singles" <%= r.category==='womens_singles'?'selected':'' %>>Women's Singles</option>
@@ -68,10 +100,7 @@
               <option value="mixed_doubles" <%= r.category==='mixed_doubles'?'selected':'' %>>Mixed Doubles</option>
             </select>
           </div>
-          <div style="display:flex;gap:.5rem;">
-            <button type="submit" class="btn btn-primary btn-sm">Save</button>
-          </div>
-        </form>
+        </div>
         <div style="display:flex;gap:.6rem;margin-top:.6rem;">
           <form method="POST" action="/gym/team/<%= team.id %>/remove-athlete" onsubmit="return confirm('Remove this member from the team?')">
             <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
@@ -84,6 +113,10 @@
         </div>
       </div>
     <% }) %>
+
+    <% if (roster.length > 0) { %>
+      <button type="submit" form="rosterBatchForm" class="btn btn-primary" style="margin-top:1rem;">Save All Changes</button>
+    <% } %>
 
     <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Add a New Member</h3>
     <p class="lede">For anyone who hasn't signed up themselves yet. They'll get an email with the default password <strong>GLGWelcome2026!</strong> and a link to log in.</p>
@@ -128,6 +161,51 @@
       </form>
     </div>
 
-    <a href="/gym" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">← Back to Dashboard</a>
+    <% if (!team.gym_id) { %>
+      <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Attach Your Team to a Gym</h3>
+      <% if (pendingRequest) { %>
+        <div class="card" style="text-align:center;color:var(--muted);padding:1.5rem;">
+          Request sent <%= pendingRequest.requested_gym_name ? `for "${pendingRequest.requested_gym_name}"` : '' %> — waiting on their decision.
+        </div>
+      <% } else { %>
+        <p class="lede">Optional — your team works fine without one. If you'd like a gym's admin to help manage this roster too, search for them below, or type a new gym name if you don't see them listed.</p>
+        <div class="card">
+          <form method="POST" action="/gym/team/<%= team.id %>/request-gym" style="display:grid;gap:.7rem;">
+            <div>
+              <label style="margin-top:0;">Search Existing Gyms</label>
+              <input type="text" id="gymSearchInput" placeholder="Start typing a gym name..." autocomplete="off">
+              <select name="gym_id" id="gymSearchSelect" style="margin-top:.5rem;">
+                <option value="">— No gym selected —</option>
+              </select>
+            </div>
+            <div>
+              <label style="margin-top:0;">Or Type a New Gym Name</label>
+              <input type="text" name="new_gym_name" id="newGymName" placeholder="Not listed? Type its name here">
+            </div>
+            <button type="submit" class="btn btn-primary btn-sm" style="justify-self:start;">Send Request</button>
+          </form>
+        </div>
+        <script>
+          const gymSearchInput = document.getElementById('gymSearchInput');
+          const gymSearchSelect = document.getElementById('gymSearchSelect');
+          const newGymName = document.getElementById('newGymName');
+          let gymSearchTimer;
+          gymSearchInput.addEventListener('input', () => {
+            clearTimeout(gymSearchTimer);
+            gymSearchTimer = setTimeout(async () => {
+              const q = gymSearchInput.value.trim();
+              const res = await fetch(`/api/regions/<%= team.region_id %>/gyms?q=${encodeURIComponent(q)}`);
+              const gyms = await res.json();
+              gymSearchSelect.innerHTML = '<option value="">— No gym selected —</option>' +
+                gyms.map(g => `<option value="${g.id}">${g.name}</option>`).join('');
+            }, 250);
+          });
+          gymSearchSelect.addEventListener('change', () => { if (gymSearchSelect.value) newGymName.value = ''; });
+          newGymName.addEventListener('input', () => { if (newGymName.value.trim()) gymSearchSelect.value = ''; });
+        </script>
+      <% } %>
+    <% } %>
+
+    <a href="<%= gym ? '/gym' : '/profile' %>" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">← Back to Dashboard</a>
   </div>
 </div>

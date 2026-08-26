@@ -108,6 +108,24 @@
       </table>
     </div>
 
+    <% if (orphanedTeams.length > 0) { %>
+      <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Teams Without a Gym (<%= orphanedTeams.length %>)</h3>
+      <p class="lede">Captain-run teams not attached to any gym. Not necessarily a problem — just flagged so nothing falls through the cracks.</p>
+      <div class="table-wrap" style="margin-top:.8rem;">
+        <table>
+          <tr><th>Team</th><th>Region</th><th>Captain</th><th>Created</th></tr>
+          <% orphanedTeams.forEach(t => { %>
+            <tr>
+              <td style="font-weight:600;"><%= t.name %></td>
+              <td><%= t.region_name || '—' %></td>
+              <td style="color:var(--muted);"><%= t.captain_first_name ? `${t.captain_first_name} ${t.captain_last_name} (${t.captain_email})` : '— no captain —' %></td>
+              <td style="color:var(--muted);font-size:.82rem;"><%= new Date(t.created_at).toLocaleString() %></td>
+            </tr>
+          <% }) %>
+        </table>
+      </div>
+    <% } %>
+
     <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Regions</h3>
     <div class="table-wrap" style="margin-top:.8rem;">
       <table>

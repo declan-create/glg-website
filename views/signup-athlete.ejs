@@ -49,6 +49,11 @@
           <div class="rlabel">Pick a Team</div>
           <div class="rdesc">I already know which team I'm joining</div>
         </label>
+        <label class="radio-opt" id="opt-captain">
+          <input type="radio" name="team_choice" value="captain" onchange="toggleTeamChoice()">
+          <div class="rlabel">I'm the Team Captain</div>
+          <div class="rdesc">Starting a new team — I'll manage the roster myself</div>
+        </label>
       </div>
 
       <div id="teamPickerWrap" style="display:none;">
@@ -58,6 +63,12 @@
         </select>
       </div>
 
+      <div id="captainTeamWrap" style="display:none;">
+        <label>Your Team's Name</label>
+        <input type="text" name="new_team_name" id="newTeamName" placeholder="e.g. Pymble Ravens">
+        <p class="lede" style="margin-top:.4rem;font-size:.82rem;">You don't need a gym to get started — you can optionally request to attach your team to one later, once your account is set up. Team names must be unique within your region.</p>
+      </div>
+
       <button type="submit" class="btn btn-primary" style="width:100%;margin-top:1.6rem;">Create My Account</button>
     </form>
   </div>
@@ -65,10 +76,13 @@
 
 <script>
 function toggleTeamChoice(){
-  const pick = document.querySelector('input[name=team_choice]:checked').value === 'pick';
-  document.getElementById('teamPickerWrap').style.display = pick ? 'block' : 'none';
-  document.getElementById('opt-assign').classList.toggle('selected', !pick);
-  document.getElementById('opt-pick').classList.toggle('selected', pick);
+  const choice = document.querySelector('input[name=team_choice]:checked').value;
+  document.getElementById('teamPickerWrap').style.display = choice === 'pick' ? 'block' : 'none';
+  document.getElementById('captainTeamWrap').style.display = choice === 'captain' ? 'block' : 'none';
+  document.getElementById('newTeamName').required = choice === 'captain';
+  document.getElementById('opt-assign').classList.toggle('selected', choice === 'assign');
+  document.getElementById('opt-pick').classList.toggle('selected', choice === 'pick');
+  document.getElementById('opt-captain').classList.toggle('selected', choice === 'captain');
 }
 document.getElementById('opt-assign').classList.add('selected');
 

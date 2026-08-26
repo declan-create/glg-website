@@ -8,6 +8,7 @@
   </div>
   <div class="dash-main">
     <% if (welcome) { %><div class="form-success">Gym registered! Here's your dashboard.</div><% } %>
+    <% if (judgesGenerated) { %><div class="form-success">Judge logins are ready — check your email for the list.</div><% } %>
     <div class="section-eyebrow">Gym Dashboard</div>
     <h2><%= gym.name %></h2>
     <p style="color:var(--muted);margin-top:.3rem;">Manage your teams and roster.</p>
@@ -39,6 +40,41 @@
         <button type="submit" class="btn btn-primary btn-sm">+ Add Team</button>
       </form>
     </div>
+
+    <% if (pendingAttachmentRequests.length > 0) { %>
+      <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Team Requests to Join You</h3>
+      <p class="lede">These are captain-run teams asking to attach to your gym. Approving means you'll co-manage the roster with their captain — nothing is taken away from them.</p>
+      <% pendingAttachmentRequests.forEach(r => { %>
+        <div class="card" style="margin-top:.8rem;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:.8rem;">
+          <div>
+            <div style="font-family:'Barlow Condensed',sans-serif;font-weight:700;color:var(--forest);"><%= r.team_name %></div>
+            <div style="font-size:.82rem;color:var(--muted);">Requested by <%= r.first_name %> <%= r.last_name %> (<%= r.email %>)</div>
+          </div>
+          <div style="display:flex;gap:.6rem;">
+            <form method="POST" action="/gym/attachment-requests/<%= r.id %>/approve"><button type="submit" class="btn btn-primary btn-sm">Approve</button></form>
+            <form method="POST" action="/gym/attachment-requests/<%= r.id %>/reject" onsubmit="return confirm('Reject this team\'s request to join you?')"><button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Reject</button></form>
+          </div>
+        </div>
+      <% }) %>
+    <% } %>
+
+    <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Judge Logins</h3>
+    <% if (allJudgesExist) { %>
+      <p class="lede">One standing login per category — all mail routes to this same inbox (your email). Assign whichever's relevant when entering results for a fixture.</p>
+      <div class="table-wrap">
+        <table>
+          <tr><th>Category</th><th>Login Email</th></tr>
+          <% standingJudges.forEach(j => { %>
+            <tr><td><%= j.label %></td><td style="font-family:'Roboto Mono',monospace;font-size:.85rem;color:var(--muted);"><%= j.email %></td></tr>
+          <% }) %>
+        </table>
+      </div>
+    <% } else { %>
+      <p class="lede">Generate your 5 category-judge logins — one per category, all routing back to your own inbox. No need to set each one up by hand.</p>
+      <form method="POST" action="/gym/judges/generate">
+        <button type="submit" class="btn btn-primary btn-sm">Generate Judge Logins</button>
+      </form>
+    <% } %>
 
     <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Unassigned Athlete Pool — Your Region</h3>
     <p class="lede">Athletes who signed up asking to be assigned. Pull them into one of your teams.</p>
