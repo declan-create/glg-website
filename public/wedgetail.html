@@ -24,6 +24,14 @@
   *{box-sizing:border-box;}
   body{margin:0;background:var(--forest);color:var(--off);font-family:'Inter',sans-serif;}
   h1,h2,.disp{font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:.02em;}
+  /* Embed mode: hosted in an iframe inside the judge's live scoring page,
+     which already has its own header/clock/nav — so the prototype's own
+     header, the full explainer block, and the manual Fixture ID/category/
+     Connect controls (redundant with the deep link + auto-connect) are all
+     hidden, leaving just the camera lanes and the controls a judge actually
+     taps mid-match. */
+  body.embed header, body.embed .howto, body.embed .live-link-fields { display:none; }
+  body.embed .controls { padding:.5rem .6rem; gap:.5rem; }
   header{padding:1.4rem 1.6rem 1rem;border-bottom:1px solid rgba(163,230,53,.25);}
   header h1{margin:0;font-size:1.6rem;color:var(--lime);}
   header p{margin:.3rem 0 0;color:var(--slate);font-size:.85rem;max-width:70ch;}
@@ -92,6 +100,11 @@
     <select id="bottomMode">
       <option value="angle">Joint angle (squat depth)</option>
       <option value="floor">Weight-to-floor (calibrated — deadlift / snatch)</option>
+      <option value="lunge">Knee-to-ground (standing lunge)</option>
+      <option value="rack">Rack-to-overhead (push press)</option>
+      <option value="wallball">Squat-to-overhead (wall ball)</option>
+      <option value="twist">Side-to-side crossing (Russian twist)</option>
+      <option value="burpee">Hands-to-floor + stand (burpee box jump-over)</option>
     </select>
   </div>
   <div class="field" id="bottomAngleField">
@@ -99,8 +112,12 @@
     <input id="bottomAngle" type="number" value="135" min="60" max="160" />
   </div>
   <div class="field" id="floorToleranceField" style="display:none;">
-    <label>Floor tolerance (px)</label>
+    <label>Ground tolerance (px)</label>
     <input id="floorTolerance" type="number" value="45" min="5" max="80" />
+  </div>
+  <div class="field" id="requireOverheadField" style="display:none;">
+    <label>Overhead lockout (DB Snatch)</label>
+    <input id="requireOverhead" type="checkbox" style="width:1.3rem;height:1.3rem;" />
   </div>
   <div class="field">
     <label>Lockout angle (° at knee)</label>
@@ -110,11 +127,11 @@
     <label>Camera</label>
     <select id="cameraSelect"><option value="">Default camera</option></select>
   </div>
-  <div class="field">
+  <div class="field live-link-fields">
     <label>Fixture ID</label>
     <input id="fixtureId" type="number" placeholder="e.g. 12" style="width:6rem;" />
   </div>
-  <div class="field">
+  <div class="field live-link-fields">
     <label>Category</label>
     <select id="categorySelect">
       <option value="mens_singles">Men's Singles</option>
@@ -128,7 +145,7 @@
     <label>Exercise (live scoring)</label>
     <select id="exerciseSelect" style="width:13rem;"><option value="">Not connected</option></select>
   </div>
-  <button class="btn-outline" id="connectBtn">Connect Live Scoring</button>
+  <button class="btn-outline live-link-fields" id="connectBtn">Connect Live Scoring</button>
   <div class="field">
     <label>Live scoring</label>
     <span id="liveSyncStatus" style="font-size:.85rem;color:var(--slate);padding:.4rem 0;">not connected — counts stay local</span>
@@ -213,6 +230,7 @@ const CFG = {
   topAngle: () => parseFloat(document.getElementById('topAngle').value),
   bottomMode: () => document.getElementById('bottomMode').value,
   floorTolerance: () => parseFloat(document.getElementById('floorTolerance').value),
+  requireOverhead: () => document.getElementById('requireOverhead').checked,
 };
 
 const CONNECTIONS = [
@@ -237,6 +255,26 @@ function angleAt(a,b,c){
   return Math.acos(cos) * 180/Math.PI;
 }
 
+// DB Snatch's real "lockout" is the weight overhead with the arm extended —
+// standing up straight (the existing hip/knee/ankle check) doesn't prove
+// that happened at all, it only proves the athlete stood up, which they
+// could do with the weight still at the rack or hip. This checks the same
+// arm that's tracked for the floor-touch, generously: wrist clearly above
+// shoulder height, elbow close to straight. Kept crude on purpose, same
+// philosophy as the rest of the counter — a coach's NO REP still overrides
+// any borderline call, this just stops the obvious miss (weight never left
+// the rack) from counting automatically.
+const OVERHEAD_MARGIN_PX = 15;   // wrist must clear the shoulder by at least this many px
+const OVERHEAD_ELBOW_MIN = 150;  // degrees — how straight the arm needs to be to call it "extended"
+function isOverheadLockout(kp, armSide){
+  const wrist = kp[`${armSide}_wrist`], elbow = kp[`${armSide}_elbow`], shoulder = kp[`${armSide}_shoulder`];
+  if (!wrist || !elbow || !shoulder || wrist.score < 0.3 || elbow.score < 0.3 || shoulder.score < 0.3) return null; // can't see the arm clearly — see call site for how this is handled
+  const wristAboveShoulder = (shoulder.y - wrist.y) > OVERHEAD_MARGIN_PX; // smaller y = higher up on screen
+  const armAngle = angleAt(shoulder, elbow, wrist);
+  const armExtended = armAngle != null && armAngle > OVERHEAD_ELBOW_MIN;
+  return wristAboveShoulder && armExtended;
+}
+
 class Lane {
   constructor(el){
     this.el = el;
@@ -254,6 +292,9 @@ class Lane {
     this.view = null; // {x,y,w,h} — the auto-tracking crop window within this lane's raw half-frame, in raw pixels
     this.rawHalf = {sw:0, sh:0}; // this lane's full half-frame size, in raw video pixels
     this.lostSince = null; // timestamp tracking was last lost — drives the widen-and-search-again behaviour
+    this.lockCenter = null; // FIELD-space hip/shoulder midpoint of the currently-locked athlete — null means "not locked onto anyone yet"
+    this.candidate = null; // {x, y, frames} — a pose that jumped far from lockCenter, held here until it proves it's not just someone walking through
+    this.twistSide = null; // 'left' | 'right' | null — last confirmed side touched, for Russian Twist
     this.label = el.querySelector('.tag') ? el.querySelector('.tag').textContent.trim() : (el.dataset.lane || '');
     this.bottomMetricAtHit = null; // the angle (or floor delta) captured at the instant "bottom" triggered, for this rep in progress
     this.bottomConfAtHit = null;   // tracking confidence at that same instant
@@ -294,7 +335,7 @@ class Lane {
     }, 250);
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
 
   // Grabs this lane's half of the shared video — but rather than a rigid
   // static crop, each lane maintains its own "view window" that smoothly
@@ -349,6 +390,12 @@ class Lane {
         const L = 0.05;
         this.view.x += (0-this.view.x)*L; this.view.y += (0-this.view.y)*L;
         this.view.w += (sw-this.view.w)*L; this.view.h += (sh-this.view.h)*L;
+        // Genuinely gone, not just occluded for a moment — drop the identity lock too.
+        // Whoever the camera finds next (once it's widened back out) is treated as a
+        // fresh, legitimate acquisition rather than a suspicious jump from where the
+        // athlete used to be. Without this, a partner who stepped away and comes back
+        // in a different spot would otherwise sit in "verifying" limbo for no reason.
+        this.lockCenter = null; this.candidate = null;
       }
       return;
     }
@@ -393,6 +440,51 @@ class Lane {
     const kpField = {}; // raw-half-frame space — for counting logic + view tracking, stable across zoom
     for (const name of Object.keys(kpCanvas)) kpField[name] = this.toField(kpCanvas[name]);
 
+    // --- Identity continuity check ---
+    // MoveNet's single-pose model has no concept of "the same person as last
+    // frame" — it just returns whichever pose it's most confident about in
+    // the current crop. Normally that's fine because the crop is narrowed
+    // onto the athlete already, but if a bystander (a coach, another athlete
+    // walking to the next station) passes through that narrowed crop, the
+    // model happily reports *their* pose instead, and it would get counted
+    // as reps. Guard against that: a pose is only trusted immediately if
+    // it's close to where the tracked athlete was last seen. A pose that
+    // jumps a long way has to hold steady near its new spot for several
+    // consecutive frames before it's accepted — long enough to tell a real
+    // hand-off (athlete moved further than expected) apart from someone
+    // briefly crossing the shot, which rarely lingers that long.
+    const torsoPts = ['left_hip','right_hip','left_shoulder','right_shoulder'].map(n => kpField[n]).filter(p => p && p.score > 0.3);
+    if (torsoPts.length){
+      let cx=0, cy=0; for (const p of torsoPts){ cx+=p.x; cy+=p.y; } cx/=torsoPts.length; cy/=torsoPts.length;
+      const CONFIRM_FRAMES = 8; // ~0.4–0.6s at this loop's typical rate — enough to reject a quick walk-through, not enough to feel laggy on a real hand-off
+      if (!this.lockCenter){
+        this.lockCenter = {x:cx, y:cy}; // nobody locked yet (fresh start, or just re-widened after losing the athlete) — accept immediately
+        this.candidate = null;
+      } else {
+        const dist = Math.hypot(cx-this.lockCenter.x, cy-this.lockCenter.y);
+        const maxJump = Math.max(this.rawHalf.sw, this.rawHalf.sh) * 0.18; // generous per-frame movement allowance for a real athlete
+        if (dist <= maxJump){
+          this.lockCenter.x += (cx-this.lockCenter.x)*0.3; this.lockCenter.y += (cy-this.lockCenter.y)*0.3; // same person — smoothly track them
+          this.candidate = null;
+        } else {
+          if (!this.candidate || Math.hypot(cx-this.candidate.x, cy-this.candidate.y) > maxJump*0.5){
+            this.candidate = {x:cx, y:cy, frames:1}; // a new, different jump — start a fresh confirmation count
+          } else {
+            this.candidate.x = cx; this.candidate.y = cy; this.candidate.frames++;
+          }
+          if (this.candidate.frames >= CONFIRM_FRAMES){
+            this.lockCenter = {x:cx, y:cy}; this.candidate = null; // held steady long enough — treat as a genuine hand-off
+          } else {
+            // Not confirmed yet — don't chase this pose with the camera and don't count off it.
+            // Keep counting/framing paused on the real athlete's last known position instead.
+            this.confEl.textContent = 'tracking: verifying'; this.confEl.classList.add('low');
+            this.followAthlete({});
+            return;
+          }
+        }
+      }
+    }
+
     this.followAthlete(kpField);
     this.updateCount(kpField);
   }
@@ -435,10 +527,18 @@ class Lane {
     const LOW_CONF_THRESHOLD = 0.5; // below this, trust the video review over the live call
 
     let flagged = false, reason = null;
-    if (mode === 'floor') {
+    if (mode === 'floor' || mode === 'burpee') {
       const tol = CFG.floorTolerance();
       const marginFromLine = this.bottomMetricAtHit - (-tol); // how far past the tolerance line it was, in px
-      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `weight only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `${mode === 'burpee' ? 'hands' : 'weight'} only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+    } else if (mode === 'lunge' || mode === 'rack') {
+      const tol = CFG.floorTolerance();
+      const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin it had below the tolerance line
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `${mode === 'rack' ? 'rack position' : 'knee'} only just reached ground tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+    } else if (mode === 'twist') {
+      const tol = CFG.floorTolerance();
+      const marginFromLine = this.bottomMetricAtHit - tol; // how far past the crossing margin the wrist got
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `twist only just crossed the midline margin (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px required)`; }
     } else {
       const threshold = CFG.bottomAngle();
       const marginFromLine = threshold - this.bottomMetricAtHit; // how many degrees deeper than the cutoff it went
@@ -457,6 +557,9 @@ class Lane {
   }
 
   updateCount(kp){
+    const mode = CFG.bottomMode();
+    if (mode === 'twist'){ this.updateCountTwist(kp); return; } // no leg/angle cycle involved at all — entirely separate logic below
+
     // pick whichever side (left/right) is more confidently visible this frame
     const sideScore = side => (kp[`${side}_hip`]?.score||0)+(kp[`${side}_knee`]?.score||0)+(kp[`${side}_ankle`]?.score||0);
     const side = sideScore('left') >= sideScore('right') ? 'left' : 'right';
@@ -483,24 +586,69 @@ class Lane {
     this.phaseEl.classList.remove('waiting');
 
     const TOP = CFG.topAngle();
-    const mode = CFG.bottomMode();
     const angle = angleAt(hip, knee, ankle);
     if (angle == null) return;
 
     let bottomHit;
     let bottomLabel;
-    if (mode === 'floor'){
+    let gap = null; // knee/wrist-to-reference px gap for lunge, rack, and burpee modes — hoisted so it's available below as the review-flag metric
+    if (mode === 'floor' || mode === 'burpee'){
+      // Burpee's "down" phase reuses exactly the same wrist-at-calibrated-floor-height
+      // check as the deadlift/snatch — hands touching the ground is the same physical
+      // fact as a weight touching the ground. Deliberately does NOT try to verify the
+      // box was actually cleared afterwards (see isOverheadLockout's sibling note below
+      // for why) — that stays the coach's NO REP call, same as everything else here.
       if (this.floorRefY == null || this.lastWrist.score < 0.3){
         this.phaseEl.textContent = this.floorRefY == null
-          ? 'not calibrated — hit "Calibrate Floor" with the bar at rest'
+          ? 'not calibrated — hit "Calibrate Floor" with hands on the ground'
           : 'tracking lost — repositioning needed';
         this.phaseEl.classList.remove('hit');
         return;
       }
       const tol = CFG.floorTolerance();
       bottomHit = this.lastWrist.y >= this.floorRefY - tol;
-      bottomLabel = `weight at floor (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px)`;
+      bottomLabel = mode === 'burpee' ? `hands at floor (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px)` : `weight at floor (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px)`;
+    } else if (mode === 'lunge'){
+      // No calibration step needed — the athlete's own ankle keypoint IS the
+      // ground reference every frame, unlike the barbell/floor case where the
+      // camera has no other way to know where the floor is. Track whichever
+      // leg is currently lower (closer to its own ankle) since that's the
+      // working leg for this rep — lunges alternate which leg drops.
+      const gapFor = s => {
+        const k = kp[`${s}_knee`], a = kp[`${s}_ankle`];
+        if (!k || !a || k.score < 0.3 || a.score < 0.3) return null;
+        return a.y - k.y; // shrinks toward 0 as that knee drops toward the ground
+      };
+      const gaps = [gapFor('left'), gapFor('right')].filter(g => g != null);
+      if (!gaps.length){
+        this.phaseEl.textContent = 'tracking lost — repositioning needed';
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      gap = Math.min(...gaps);
+      const tol = CFG.floorTolerance();
+      bottomHit = gap <= tol;
+      bottomLabel = `knee near ground (Δ${gap.toFixed(0)}px)`;
+    } else if (mode === 'rack'){
+      // Push Press's counted cycle is rack → overhead → back to rack, not a
+      // floor touch or a squat depth — "bottom" here means the wrist is back
+      // near shoulder height (racked), not overhead. No calibration needed:
+      // the shoulder keypoint is the live reference every frame.
+      const shoulder = kp[`${wristSide}_shoulder`];
+      if (!this.lastWrist || this.lastWrist.score < 0.3 || !shoulder || shoulder.score < 0.3){
+        this.phaseEl.textContent = 'tracking lost — repositioning needed';
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      gap = Math.abs(this.lastWrist.y - shoulder.y);
+      const tol = CFG.floorTolerance();
+      bottomHit = gap <= tol;
+      bottomLabel = `racked (Δ${gap.toFixed(0)}px from shoulder)`;
     } else {
+      // 'angle' (squat) and 'wallball' share the same bottom check — a wall
+      // ball's validity at the bottom is body position (hip crease below
+      // knee), same as a goblet squat. What's different is the top — see
+      // the lockout check below.
       bottomHit = angle < CFG.bottomAngle();
       bottomLabel = `bottom reached (${angle.toFixed(0)}°)`;
     }
@@ -509,11 +657,25 @@ class Lane {
       this.atBottom = true;
       // Capture exactly what tripped "bottom" right now — this is what gets
       // checked against the review margin once the rep completes at lockout.
-      this.bottomMetricAtHit = mode === 'floor' ? (this.lastWrist.y - this.floorRefY) : angle;
+      this.bottomMetricAtHit = (mode === 'floor' || mode === 'burpee') ? (this.lastWrist.y - this.floorRefY)
+        : (mode === 'lunge' || mode === 'rack') ? gap : angle;
       this.bottomConfAtHit = avgConf;
       this.phaseEl.textContent = `${bottomLabel} — ascending…`;
       this.phaseEl.classList.remove('hit');
     } else if (this.atBottom && angle > TOP){
+      // Standing tall alone doesn't prove the weight/ball made it overhead —
+      // Push Press and Wall Ball both need that checked explicitly, same
+      // helper as the opt-in DB Snatch check, just mandatory here instead of
+      // a toggle since there's no valid version of either rep without it.
+      const overheadRequired = (mode === 'floor' && CFG.requireOverhead()) || mode === 'rack' || mode === 'wallball';
+      if (overheadRequired){
+        const overhead = isOverheadLockout(kp, wristSide);
+        if (overhead === false){
+          this.phaseEl.textContent = `standing (${angle.toFixed(0)}°) — not overhead yet`;
+          this.phaseEl.classList.remove('hit');
+          return;
+        }
+      }
       this.atBottom = false;
       this.reps += 1;
       this.countEl.textContent = this.reps;
@@ -529,6 +691,58 @@ class Lane {
       this.phaseEl.classList.remove('hit');
     } else {
       this.phaseEl.textContent = `standing / locked out (${angle.toFixed(0)}°)`;
+      this.phaseEl.classList.remove('hit');
+    }
+  }
+
+  // Russian Twist has no depth/lockout cycle at all — it's a seated,
+  // side-to-side rotation. What counts is the hand/weight crossing from one
+  // side of the body to the other, so this tracks the wrist's horizontal
+  // position against the midline between the hips, with a dead zone around
+  // the midline so small jitter near centre doesn't register as a crossing.
+  updateCountTwist(kp){
+    const wristSide = (kp.left_wrist?.score||0) >= (kp.right_wrist?.score||0) ? 'left' : 'right';
+    const wrist = kp[`${wristSide}_wrist`];
+    const lh = kp.left_hip, rh = kp.right_hip;
+    if (!wrist || wrist.score < 0.3 || !lh || !rh || lh.score < 0.3 || rh.score < 0.3){
+      this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
+      this.phaseEl.textContent = 'tracking lost — repositioning needed';
+      this.phaseEl.classList.remove('hit');
+      return;
+    }
+    this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
+
+    if (!this.armed){
+      this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
+      return;
+    }
+    this.phaseEl.classList.remove('waiting');
+
+    const midlineX = (lh.x + rh.x) / 2;
+    const margin = CFG.floorTolerance(); // reused here as the crossing margin, in px, either side of the midline
+    let touchedSide = null;
+    if (wrist.x < midlineX - margin) touchedSide = 'left';
+    else if (wrist.x > midlineX + margin) touchedSide = 'right';
+    // else: in the dead zone near the midline — ambiguous, don't update anything off it
+
+    if (touchedSide && touchedSide !== this.twistSide){
+      if (this.twistSide != null){ // the very first touch just establishes a starting side — only an actual crossing FROM a known side counts
+        this.reps += 1;
+        this.countEl.textContent = this.reps;
+        this.bottomMetricAtHit = Math.abs(wrist.x - midlineX);
+        this.bottomConfAtHit = Math.min(wrist.score, lh.score, rh.score);
+        this.phaseEl.textContent = `REP COUNTED — touched ${touchedSide}`;
+        this.phaseEl.classList.add('hit');
+        this.logRepEvent({ lockoutAngle: null, mode: 'twist' });
+        this.syncCount();
+      }
+      this.twistSide = touchedSide;
+    } else if (touchedSide){
+      this.phaseEl.textContent = `holding ${touchedSide} — twist to the other side to count`;
+      this.phaseEl.classList.remove('hit');
+    } else {
+      this.phaseEl.textContent = 'centre — twist to either side';
       this.phaseEl.classList.remove('hit');
     }
   }
@@ -549,10 +763,17 @@ const liveStatusEl = document.getElementById('liveSyncStatus');
 const exerciseSelectEl = document.getElementById('exerciseSelect');
 
 // prefill from a deep link, e.g. wedgetail.html?fixture=12&category=mixed_doubles
+// &embed=1 additionally switches to a compact layout (for hosting inside an
+// iframe on the judge's live scoring page) and auto-connects live scoring
+// immediately, rather than making the judge type the Fixture ID in by hand.
 (function prefillFromQuery(){
   const q = new URLSearchParams(location.search);
   if (q.get('fixture')) document.getElementById('fixtureId').value = q.get('fixture');
   if (q.get('category')) document.getElementById('categorySelect').value = q.get('category');
+  if (q.get('embed') === '1'){
+    document.body.classList.add('embed');
+    if (q.get('fixture') && q.get('category')) connectLiveScoring();
+  }
 })();
 
 async function connectLiveScoring(){
@@ -579,9 +800,20 @@ async function connectLiveScoring(){
     document.querySelector('[data-lane=B] [data-role=tag]').textContent = ctx.team_b.name;
 
     exerciseSelectEl.innerHTML = ctx.exercises.map(e => `<option value="${e.id}">Gate ${e.gate_number}: ${e.name}</option>`).join('');
-    if (ctx.exercises.length) {
-      LIVE.exerciseId = ctx.exercises[0].id;
-      document.getElementById('exerciseName').value = ctx.exercises[0].name;
+    const q = new URLSearchParams(location.search);
+    const deepLinkExId = parseInt(q.get('exercise'));
+    const chosen = ctx.exercises.find(e => e.id === deepLinkExId) || ctx.exercises[0];
+    if (chosen) {
+      LIVE.exerciseId = chosen.id;
+      exerciseSelectEl.value = chosen.id;
+      document.getElementById('exerciseName').value = chosen.name;
+    }
+    if (q.get('mode')) {
+      document.getElementById('bottomMode').value = q.get('mode');
+      document.getElementById('bottomMode').dispatchEvent(new Event('change')); // reuse the existing show/hide logic for the right fields
+    }
+    if (q.get('overhead') === '1') {
+      document.getElementById('requireOverhead').checked = true;
     }
     liveStatusEl.textContent = `connected — writing live to Fixture ${ctx.fixture_id}`;
     liveStatusEl.style.color = 'var(--lime)';
@@ -702,12 +934,11 @@ for (const id of REMEMBERED_FIELDS) {
     localStorage.setItem('wedgetail_' + id, e.target.value);
   });
 }
-// the mode dropdown needs its dependent fields (angle vs floor-tolerance) shown/hidden
-// correctly if a remembered value restores it to "floor" on page load
-if (document.getElementById('bottomMode').value === 'floor') {
-  document.getElementById('bottomAngleField').style.display = 'none';
-  document.getElementById('floorToleranceField').style.display = 'flex';
-  document.getElementById('calibrateBtn').style.display = 'inline-block';
+{
+  const cb = document.getElementById('requireOverhead');
+  const saved = localStorage.getItem('wedgetail_requireOverhead');
+  if (saved !== null) cb.checked = (saved === 'true');
+  cb.addEventListener('change', () => localStorage.setItem('wedgetail_requireOverhead', cb.checked));
 }
 
 document.getElementById('goBtn').addEventListener('click', () => {
@@ -718,13 +949,26 @@ document.getElementById('goBtn').addEventListener('click', () => {
   startRecording();
 });
 
-document.getElementById('bottomMode').addEventListener('change', (e) => {
-  const isFloor = e.target.value === 'floor';
-  document.getElementById('bottomAngleField').style.display = isFloor ? 'none' : 'flex';
-  document.getElementById('floorToleranceField').style.display = isFloor ? 'flex' : 'none';
-  document.getElementById('calibrateBtn').style.display = isFloor ? 'inline-block' : 'none';
+// Which UI fields each counting mode needs — one place to keep this
+// consistent, now that there are 7 modes instead of the original 2.
+const TOLERANCE_LABELS = {
+  floor: 'Ground tolerance (px)', lunge: 'Ground tolerance (px)', burpee: 'Ground tolerance (px)',
+  rack: 'Rack-height tolerance (px)', twist: 'Crossing margin (px)',
+};
+function updateModeUI(mode){
+  const needsAngle = mode === 'angle' || mode === 'wallball';
+  const needsTol = ['floor','lunge','rack','twist','burpee'].includes(mode);
+  const needsCalibrate = mode === 'floor' || mode === 'burpee'; // both need a one-time "wrist at floor" calibration
+  const needsOverheadToggle = mode === 'floor'; // opt-in for DB Snatch specifically — rack/wallball require it unconditionally, built into their own logic
+  document.getElementById('bottomAngleField').style.display = needsAngle ? 'flex' : 'none';
+  document.getElementById('floorToleranceField').style.display = needsTol ? 'flex' : 'none';
+  if (needsTol) document.querySelector('#floorToleranceField label').textContent = TOLERANCE_LABELS[mode] || 'Tolerance (px)';
+  document.getElementById('calibrateBtn').style.display = needsCalibrate ? 'inline-block' : 'none';
+  document.getElementById('requireOverheadField').style.display = needsOverheadToggle ? 'flex' : 'none';
   laneA.floorRefY = null; laneB.floorRefY = null; // switching modes invalidates any old calibration
-});
+}
+document.getElementById('bottomMode').addEventListener('change', (e) => updateModeUI(e.target.value));
+updateModeUI(document.getElementById('bottomMode').value); // apply once on load — matters if a remembered value restored something other than 'angle'
 
 document.getElementById('calibrateBtn').addEventListener('click', () => {
   laneA.calibrate(); laneB.calibrate();
