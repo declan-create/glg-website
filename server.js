@@ -1828,6 +1828,19 @@ app.use((err, req, res, next) => {
 
 if (require.main === module) {
   app.listen(PORT, () => console.log(`GLG app running on http://localhost:${PORT}`));
+
+  // Recording retention — see storage.js for the RECORDING_RETENTION_DAYS env
+  // var this depends on. Runs once shortly after startup (catches anything
+  // that piled up while the app was down) and then once a day. A day is
+  // plenty granular for a "delete after N days" policy; no reason to check
+  // more often than that.
+  const runRetentionCleanup = () => {
+    storage.cleanupExpiredRecordings(db)
+      .then(result => { if (result.checked) console.log(`[wedgetail retention] checked recordings older than ${result.days}d — deleted ${result.deleted}`); })
+      .catch(e => console.error('[wedgetail retention] cleanup run failed:', e.message));
+  };
+  setTimeout(runRetentionCleanup, 30 * 1000); // give the DB/volume a moment to be fully ready after a fresh deploy
+  setInterval(runRetentionCleanup, 24 * 60 * 60 * 1000);
 }
 
 module.exports = app;

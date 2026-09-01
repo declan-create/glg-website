@@ -56,4 +56,42 @@ async function deleteRecording(key) {
   await client.send(new DeleteObjectCommand({ Bucket: process.env.R2_BUCKET, Key: key }));
 }
 
-module.exports = { storageEnabled, uploadRecording, getPlaybackUrl, deleteRecording };
+// Retention: R2 doesn't auto-expire anything on its own, and match recordings
+// accumulate weekly, so left alone this bucket just grows forever. Built into
+// the app itself (rather than a Cloudflare-side lifecycle rule) so it works
+// the same way regardless of which storage account is behind it, and so the
+// DB row and the R2 object are always cleaned up together, never one without
+// the other.
+//
+//   RECORDING_RETENTION_DAYS   how long to keep clips before deleting them.
+//                              Unset or 0 = keep forever (no cleanup runs).
+function retentionDays() {
+  const n = parseInt(process.env.RECORDING_RETENTION_DAYS, 10);
+  return Number.isFinite(n) && n > 0 ? n : 0;
+}
+
+async function cleanupExpiredRecordings(db) {
+  const days = retentionDays();
+  if (!days) return { checked: false, deleted: 0 }; // retention disabled — keep everything
+  if (!storageEnabled()) return { checked: false, deleted: 0 }; // nothing uploaded anywhere yet, nothing to clean up
+
+  const cutoff = new Date(Date.now() - days * 24 * 60 * 60 * 1000).toISOString();
+  const expired = db.prepare('SELECT id, video_key FROM recordings WHERE created_at < ?').all(cutoff);
+
+  let deleted = 0;
+  for (const rec of expired) {
+    try {
+      await deleteRecording(rec.video_key);
+      db.prepare('DELETE FROM recordings WHERE id = ?').run(rec.id);
+      deleted++;
+    } catch (e) {
+      // Leave the DB row in place if the R2 delete fails (e.g. transient
+      // network issue) — better to retry next run than to lose the metadata
+      // for a clip that's still actually sitting in the bucket.
+      console.error(`[wedgetail retention] failed to delete recording ${rec.id} (${rec.video_key}):`, e.message);
+    }
+  }
+  return { checked: true, deleted, days };
+}
+
+module.exports = { storageEnabled, uploadRecording, getPlaybackUrl, deleteRecording, cleanupExpiredRecordings, retentionDays };
