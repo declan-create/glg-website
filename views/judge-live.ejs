@@ -43,6 +43,11 @@
   .entry input { width:9rem; font-size:2.2rem; font-weight:800; text-align:center; border-radius:.7rem; border:1px solid rgba(255,255,255,.25); background:rgba(0,0,0,.3); color:var(--off); padding:.3rem; }
   .entry .savebtn { background:var(--lime); color:var(--forest); border:0; border-radius:.6rem; font-weight:800; font-size:.9rem; padding:.55rem 1.4rem; }
 
+  /* embedded Wedgetail camera counter — replaces the tap zones for exercises the camera is calibrated for */
+  .wedgetail-embed { flex:1; display:flex; flex-direction:column; border-radius:1rem; overflow:hidden; border:2px solid rgba(255,255,255,.15); min-height:0; }
+  .wedgetail-embed .wtbench { font-size:.66rem; color:#b7c6c1; text-align:center; padding:.35rem .5rem; background:rgba(255,255,255,.04); flex:0 0 auto; }
+  .wedgetail-embed iframe { flex:1 1 auto; width:100%; border:0; }
+
   /* gate 4 */
   .sprintclock { text-align:center; font-size:2.6rem; font-weight:800; font-variant-numeric:tabular-nums; flex:0 0 auto; }
   .finzone { flex:1; border-radius:1rem; border:2px solid rgba(255,255,255,.15); background:rgba(255,255,255,.04); display:flex; flex-direction:column; align-items:center; justify-content:center; gap:.3rem; }
@@ -174,6 +179,33 @@
   function fmt(sec){ sec=Math.max(0,sec); const w=Math.floor(sec); return String(Math.floor(w/60)).padStart(2,'0')+':'+String(w%60).padStart(2,'0'); }
   const main = document.getElementById('mainArea');
 
+  // Exercises Wedgetail's camera is actually calibrated for, and which
+  // counting mode each needs. Matched by name rather than a hardcoded id so
+  // this doesn't silently break if the exercises table gets re-seeded.
+  // Anything not listed here falls straight through to the exact same
+  // manual tap/entry UI as before — no behaviour change for those.
+  const WEDGETAIL_MODES = {
+    'Trap Bar Deadlift': 'floor',
+    'Goblet Squat (DB)': 'angle',
+    'Lunges': 'lunge',
+    'DB Snatch': 'floor',
+    'DB Push Press': 'rack',
+    'Wall Balls': 'wallball',
+    'Russian Twist': 'twist',
+    'Burpee Box Jump-Overs': 'burpee', // heuristic: down+stand cycle only — doesn't verify the box was actually cleared, see judge note below
+  };
+  const WEDGETAIL_OVERHEAD = { 'DB Snatch': true }; // exercises where standing up alone isn't enough — the weight has to visibly clear overhead too
+  function wedgetailEmbedHtml(ex, mode){
+    const overheadParam = WEDGETAIL_OVERHEAD[ex.name] ? '&overhead=1' : '';
+    const src = `/wedgetail.html?embed=1&fixture=${FIXTURE_ID}&category=${encodeURIComponent(CATEGORY)}&exercise=${ex.id}&mode=${encodeURIComponent(mode)}${overheadParam}`;
+    const caveat = mode === 'burpee'
+      ? ' · camera checks hands-to-floor + standing only — it can\'t see the box, so watch the clear yourself and use NO REP if they skip it'
+      : '';
+    return `<div class="wedgetail-embed">
+      <div class="wtbench">${ex.benchmark_desc || ''}${ex.benchmark_desc ? ' · ' : ''}camera counting live — tap NO REP / +1 inside to correct${caveat}</div>
+      <iframe src="${src}" allow="camera" title="Wedgetail camera counter"></iframe>
+    </div>`;
+  }
   function zoneHtml(t, ex){
     const v = values[ex.id][t.id];
     const hit = ex.category_benchmark != null && v >= ex.category_benchmark;
@@ -249,7 +281,14 @@
     const ex = timed[idx];
     nameEl.textContent = `Gate ${ex.gate_number} · ${ex.name}`;
     benchEl.textContent = ex.benchmark_desc || '';
-    if (ex.unit === 'reps' || ex.unit === 'lengths') { // lengths tap-count just like reps
+    const wtMode = WEDGETAIL_MODES[ex.name];
+    if (wtMode) {
+      main.innerHTML = wedgetailEmbedHtml(ex, wtMode);
+      // No wireTaps/wireEntries here — the embedded page writes results
+      // straight to the same /result endpoint itself. The judge can still
+      // fall back to "Full results form" (footer) to type a number by hand
+      // if the camera won't start on this device.
+    } else if (ex.unit === 'reps' || ex.unit === 'lengths') { // lengths tap-count just like reps
       main.innerHTML = zoneHtml(TEAM_A, ex) + zoneHtml(TEAM_B, ex);
       wireTaps(ex);
     } else {
