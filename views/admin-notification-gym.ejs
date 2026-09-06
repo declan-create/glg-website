@@ -1,0 +1,36 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin">Overview</a>
+    <a href="/admin/gyms">Gyms</a>
+    <a href="/account">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">Gym Signup Review</div>
+    <h2><%= gym.name %></h2>
+    <span class="badge <%= gym.status==='active' ? 'badge-live' : (gym.status==='suspended' ? '' : 'badge-soon') %>" style="<%= gym.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= gym.status %></span>
+
+    <div class="card" style="margin-top:1rem;max-width:560px;">
+      <p><strong>Region:</strong> <%= gym.region_name || '—' %></p>
+      <p><strong>Address:</strong> <%= gym.address || '—' %></p>
+      <p><strong>Admin contact:</strong> <%= gym.first_name %> <%= gym.last_name %> — <%= gym.email %><% if (gym.phone) { %> — <%= gym.phone %><% } %></p>
+      <p><strong>Admin account status:</strong> <%= gym.admin_status || '—' %></p>
+      <p style="color:var(--muted);font-size:.82rem;"><strong>Signed up:</strong> <%= new Date(gym.created_at).toLocaleString() %></p>
+    </div>
+
+    <h3 style="margin-top:1.6rem;font-size:1.2rem;color:var(--forest);">Teams Created at Signup (<%= teams.length %>)</h3>
+    <ul>
+      <% teams.forEach(t => { %><li><%= t.name %> (<%= t.division || 'Open' %>)</li><% }) %>
+      <% if (teams.length === 0) { %><li style="color:var(--muted);">None yet.</li><% } %>
+    </ul>
+
+    <div style="display:flex;gap:.7rem;margin-top:1.5rem;">
+      <% if (gym.status !== 'active') { %>
+        <form method="POST" action="/admin/gyms/<%= gym.id %>/status"><input type="hidden" name="status" value="active"><button class="btn btn-primary" type="submit">Approve Admission</button></form>
+      <% } %>
+      <% if (gym.status !== 'suspended') { %>
+        <form method="POST" action="/admin/gyms/<%= gym.id %>/status" onsubmit="return confirm('Suspend this gym?')"><input type="hidden" name="status" value="suspended"><button class="btn btn-outline" style="border-color:var(--danger);color:var(--danger);" type="submit">Reject / Suspend</button></form>
+      <% } %>
+    </div>
+    <a href="/admin" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">← Back to Overview</a>
+  </div>
+</div>

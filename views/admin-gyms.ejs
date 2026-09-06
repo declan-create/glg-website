@@ -1,0 +1,57 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin">Overview</a>
+    <a href="/admin/users">Users</a>
+    <a href="/admin/gyms" class="active">Gyms</a>
+    <a href="/admin/teams">Teams</a>
+    <a href="/admin/athletes">Athletes</a>
+    <a href="/account">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">GLG HQ</div>
+    <h2>All Gyms (<%= gyms.length %>)</h2>
+    <% if (error) { %><div class="form-error" style="margin-top:1rem;"><%= error %></div><% } %>
+
+    <h3 style="margin-top:1.6rem;font-size:1.2rem;color:var(--forest);">Add a Gym</h3>
+    <div class="card" style="margin-top:.6rem;">
+      <form method="POST" action="/admin/gyms/new" style="display:grid;grid-template-columns:1.4fr 1fr 1.4fr auto;gap:.6rem;align-items:end;">
+        <div><label style="margin-top:0;">Gym Name</label><input type="text" name="name" required></div>
+        <div>
+          <label style="margin-top:0;">Region</label>
+          <select name="region_id" required>
+            <% regions.forEach(r => { %><option value="<%= r.id %>"><%= r.name %></option><% }) %>
+          </select>
+        </div>
+        <div><label style="margin-top:0;">Address</label><input type="text" name="address"></div>
+        <button type="submit" class="btn btn-primary btn-sm">Add Gym</button>
+      </form>
+      <p style="color:var(--muted);font-size:.78rem;margin-top:.6rem;">Created without an admin account — assign one from Users, or the gym can be claimed later.</p>
+    </div>
+
+    <div class="table-wrap" style="margin-top:1.2rem;">
+      <table>
+        <tr><th>Gym</th><th>Admin Contact</th><th>Region</th><th>Teams</th><th>Status</th><th></th></tr>
+        <% gyms.forEach(g => { %>
+          <tr id="gym-<%= g.id %>">
+            <td style="font-weight:600;"><%= g.name %></td>
+            <td style="color:var(--muted);"><%= g.first_name ? `${g.first_name} ${g.last_name} — ${g.email}` : '— no admin —' %></td>
+            <td><%= g.region_name || '—' %></td>
+            <td><%= g.team_count %></td>
+            <td><span class="badge <%= g.status==='active' ? 'badge-live' : (g.status==='suspended' ? '' : 'badge-soon') %>" style="<%= g.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= g.status %></span></td>
+            <td style="display:flex;gap:.4rem;flex-wrap:wrap;">
+              <a href="/admin/notifications/gym/<%= g.id %>" class="btn btn-outline btn-sm">Review</a>
+              <% if (g.status !== 'active') { %>
+                <form method="POST" action="/admin/gyms/<%= g.id %>/status"><input type="hidden" name="status" value="active"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
+              <% } %>
+              <% if (g.status !== 'suspended') { %>
+                <form method="POST" action="/admin/gyms/<%= g.id %>/status" onsubmit="return confirm('Suspend this gym?')"><input type="hidden" name="status" value="suspended"><button class="btn btn-outline btn-sm" type="submit">Suspend</button></form>
+              <% } %>
+              <form method="POST" action="/admin/gyms/<%= g.id %>/delete" onsubmit="return confirm('Delete this gym? Only works while it has no teams.')"><button class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);" type="submit">Delete</button></form>
+            </td>
+          </tr>
+        <% }) %>
+        <% if (gyms.length === 0) { %><tr><td colspan="6" style="color:var(--muted);text-align:center;padding:1.5rem;">No gyms yet.</td></tr><% } %>
+      </table>
+    </div>
+  </div>
+</div>

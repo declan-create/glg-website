@@ -1,11 +1,71 @@
-<section class="section">
-  <div class="container">
-    <div class="section-eyebrow">League Operator</div>
-    <h2>Welcome to Your Region</h2>
-    <p class="lede">Your league operator dashboard — onboard gyms, view your region's teams, and manage the local competition. Full tooling coming online as your region launches.</p>
-    <div class="card" style="max-width:600px;">
-      <p style="color:var(--muted);">Reach out to GLG HQ to get your region set up with teams and a schedule. In the meantime, read the <a href="/guide/league" style="color:var(--forest);font-weight:700;">League Franchise Guide</a> to prepare.</p>
-    </div>
-    <a href="/account" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">My Account</a>
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/league" class="active">My Region</a>
+    <a href="/guide/league">League Guide</a>
+    <a href="/account">My Account</a>
   </div>
-</section>
+  <div class="dash-main">
+    <div class="section-eyebrow">League Operator</div>
+    <h2><%= region.name %></h2>
+    <p class="lede">Everything below is scoped to your own region — gyms, teams and athletes inside it are yours to manage, the same controls GLG HQ has, just local to here.</p>
+
+    <h3 style="margin-top:1.6rem;font-size:1.2rem;color:var(--forest);">Gyms (<%= gyms.length %>)</h3>
+    <div class="table-wrap" style="margin-top:.6rem;">
+      <table>
+        <tr><th>Gym</th><th>Admin Contact</th><th>Teams</th><th>Status</th><th></th></tr>
+        <% gyms.forEach(g => { %>
+          <tr>
+            <td style="font-weight:600;"><%= g.name %></td>
+            <td style="color:var(--muted);"><%= g.first_name ? `${g.first_name} ${g.last_name} — ${g.email}` : '— no admin —' %></td>
+            <td><%= g.team_count %></td>
+            <td><span class="badge <%= g.status==='active' ? 'badge-live' : (g.status==='suspended' ? '' : 'badge-soon') %>" style="<%= g.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= g.status %></span></td>
+            <td style="display:flex;gap:.4rem;">
+              <% if (g.status !== 'active') { %>
+                <form method="POST" action="/league/gyms/<%= g.id %>/status"><input type="hidden" name="status" value="active"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
+              <% } %>
+              <% if (g.status !== 'suspended') { %>
+                <form method="POST" action="/league/gyms/<%= g.id %>/status" onsubmit="return confirm('Suspend this gym?')"><input type="hidden" name="status" value="suspended"><button class="btn btn-outline btn-sm" type="submit">Suspend</button></form>
+              <% } %>
+            </td>
+          </tr>
+        <% }) %>
+        <% if (gyms.length === 0) { %><tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No gyms in your region yet.</td></tr><% } %>
+      </table>
+    </div>
+
+    <h3 style="margin-top:2rem;font-size:1.2rem;color:var(--forest);">Teams (<%= teams.length %>)</h3>
+    <div class="table-wrap" style="margin-top:.6rem;">
+      <table>
+        <tr><th>Team</th><th>Gym</th><th>Roster</th></tr>
+        <% teams.forEach(t => { %>
+          <tr><td style="font-weight:600;"><%= t.name %></td><td><%= t.gym_name || '—' %></td><td><%= t.roster_count %></td></tr>
+        <% }) %>
+        <% if (teams.length === 0) { %><tr><td colspan="3" style="color:var(--muted);text-align:center;padding:1.5rem;">No teams in your region yet.</td></tr><% } %>
+      </table>
+    </div>
+
+    <h3 style="margin-top:2rem;font-size:1.2rem;color:var(--forest);">Athletes (<%= athletes.length %>)</h3>
+    <div class="table-wrap" style="margin-top:.6rem;">
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Team</th><th>Status</th><th></th></tr>
+        <% athletes.forEach(a => { %>
+          <tr>
+            <td style="font-weight:600;"><%= a.first_name %> <%= a.last_name %></td>
+            <td style="color:var(--muted);"><%= a.email %></td>
+            <td><%= a.team_name || '— unassigned —' %></td>
+            <td><span class="badge <%= a.status==='active' ? 'badge-live' : (a.status==='suspended' ? '' : 'badge-soon') %>" style="<%= a.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= a.status %></span></td>
+            <td style="display:flex;gap:.4rem;">
+              <% if (a.status !== 'active') { %>
+                <form method="POST" action="/league/athletes/<%= a.athlete_id %>/status"><input type="hidden" name="status" value="active"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
+              <% } %>
+              <% if (a.status !== 'suspended') { %>
+                <form method="POST" action="/league/athletes/<%= a.athlete_id %>/status" onsubmit="return confirm('Suspend this athlete?')"><input type="hidden" name="status" value="suspended"><button class="btn btn-outline btn-sm" type="submit">Suspend</button></form>
+              <% } %>
+            </td>
+          </tr>
+        <% }) %>
+        <% if (athletes.length === 0) { %><tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No athletes in your region yet.</td></tr><% } %>
+      </table>
+    </div>
+  </div>
+</div>

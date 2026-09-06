@@ -1,0 +1,51 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin">Overview</a>
+    <a href="/admin/athletes">Athletes</a>
+    <a href="/account">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">Athlete Signup Review</div>
+    <h2><%= athlete.first_name %> <%= athlete.last_name %></h2>
+    <span class="badge <%= athlete.user_status==='active' ? 'badge-live' : (athlete.user_status==='suspended' ? '' : 'badge-soon') %>" style="<%= athlete.user_status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= athlete.user_status %></span>
+
+    <div class="card" style="margin-top:1rem;max-width:560px;">
+      <p><strong>Email:</strong> <%= athlete.email %></p>
+      <% if (athlete.phone) { %><p><strong>Phone:</strong> <%= athlete.phone %></p><% } %>
+      <p><strong>Region:</strong> <%= athlete.region_name || '—' %></p>
+      <p><strong>Category:</strong> <%= athlete.category || '— not set —' %></p>
+      <p style="color:var(--muted);font-size:.82rem;"><strong>Signed up:</strong> <%= new Date(athlete.created_at).toLocaleString() %></p>
+    </div>
+
+    <h3 style="margin-top:1.6rem;font-size:1.2rem;color:var(--forest);">Team</h3>
+    <% if (team) { %>
+      <p class="lede">
+        On <strong><%= team.name %></strong>
+        (<%= team.is_unassigned ? 'a captain-run team, no gym yet' : team.gym_name %>).
+        <% if (team.captain_user_id) { %>Approval for this roster is normally the captain's call — you're overriding here.<% } else if (!team.is_unassigned) { %>Approval for this roster is normally the gym's call — you're overriding here.<% } %>
+      </p>
+    <% } else { %>
+      <p class="lede">Not yet attached to any team — pick one below, or approve them as-is and assign a team later from the Athletes list.</p>
+      <form method="POST" action="/admin/athletes/<%= athlete.id %>/assign-team" style="display:flex;gap:.6rem;align-items:end;max-width:420px;">
+        <div style="flex:1;">
+          <label style="margin-top:0;">Assign to Team</label>
+          <select name="team_id">
+            <option value="">— unassigned —</option>
+            <% availableTeams.forEach(t => { %><option value="<%= t.id %>"><%= t.name %></option><% }) %>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-outline btn-sm">Assign</button>
+      </form>
+    <% } %>
+
+    <div style="display:flex;gap:.7rem;margin-top:1.5rem;">
+      <% if (athlete.user_status !== 'active') { %>
+        <form method="POST" action="/admin/athletes/<%= athlete.id %>/status"><input type="hidden" name="status" value="active"><button class="btn btn-primary" type="submit">Approve</button></form>
+      <% } %>
+      <% if (athlete.user_status !== 'suspended') { %>
+        <form method="POST" action="/admin/athletes/<%= athlete.id %>/status" onsubmit="return confirm('Suspend this athlete?')"><input type="hidden" name="status" value="suspended"><button class="btn btn-outline" style="border-color:var(--danger);color:var(--danger);" type="submit">Reject / Suspend</button></form>
+      <% } %>
+    </div>
+    <a href="/admin" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">← Back to Overview</a>
+  </div>
+</div>

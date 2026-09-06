@@ -59,8 +59,25 @@
     <% } %>
 
     <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Judge Logins</h3>
+    <% if (generatedPasswords && generatedPasswords.length > 0) { %>
+      <div class="form-success">
+        <strong>New passwords generated</strong> — shown once, right here. Hand each login + password to whoever's judging that category today; they expire in 24 hours.
+      </div>
+      <div class="table-wrap" style="margin-top:.6rem;">
+        <table>
+          <tr><th>Category</th><th>Login Email</th><th>Password</th></tr>
+          <% generatedPasswords.forEach(j => { %>
+            <tr>
+              <td><%= j.label %></td>
+              <td style="font-family:'Roboto Mono',monospace;font-size:.85rem;color:var(--muted);"><%= j.email %></td>
+              <td style="font-family:'Roboto Mono',monospace;font-size:.95rem;font-weight:700;"><%= j.password || '—' %></td>
+            </tr>
+          <% }) %>
+        </table>
+      </div>
+    <% } %>
     <% if (allJudgesExist) { %>
-      <p class="lede">One standing login per category — all mail routes to this same inbox (your email). Assign whichever's relevant when entering results for a fixture.</p>
+      <p class="lede">One standing login per category — all mail routes to this same inbox (your email). Assign whichever's relevant when entering results for a fixture. Passwords expire after 24 hours, so generate a fresh set before each competition day.</p>
       <div class="table-wrap">
         <table>
           <tr><th>Category</th><th>Login Email</th></tr>
@@ -69,16 +86,20 @@
           <% }) %>
         </table>
       </div>
+      <form method="POST" action="/gym/judges/generate-passwords" style="margin-top:.8rem;">
+        <button type="submit" class="btn btn-primary btn-sm">Generate Passwords</button>
+      </form>
     <% } else { %>
-      <p class="lede">Generate your 5 category-judge logins — one per category, all routing back to your own inbox. No need to set each one up by hand.</p>
+      <p class="lede">Generate your 5 category-judge logins — one per category, all routing back to your own inbox. No need to set each one up by hand. Each gets its own random password (shown once, 24-hour expiry).</p>
       <form method="POST" action="/gym/judges/generate">
         <button type="submit" class="btn btn-primary btn-sm">Generate Judge Logins</button>
       </form>
     <% } %>
 
     <h3 style="margin-top:2.5rem;font-size:1.4rem;color:var(--forest);">Unassigned Athlete Pool — Your Region</h3>
-    <p class="lede">Athletes who signed up asking to be assigned. Pull them into one of your teams.</p>
+    <p class="lede">Athletes who signed up asking to be assigned. Set a team for as many as you like below, then hit Assign once — no need to save each row separately.</p>
     <div class="table-wrap">
+      <form id="poolAssignForm" method="POST" action="/gym/pool/assign"></form>
       <table>
         <tr><th>Name</th><th>Gender</th><th>Email</th><th>Assign To</th></tr>
         <% if (pool.length === 0) { %>
@@ -90,18 +111,17 @@
             <td><%= p.gender %></td>
             <td style="color:var(--muted);"><%= p.email %></td>
             <td>
-              <form method="POST" action="/gym/pool/assign" style="display:flex;gap:.5rem;">
-                <input type="hidden" name="athlete_id" value="<%= p.athlete_id %>">
-                <select name="team_id" required>
-                  <option value="">Choose team</option>
-                  <% teams.forEach(t => { %><option value="<%= t.id %>"><%= t.name %></option><% }) %>
-                </select>
-                <button type="submit" class="btn btn-primary btn-sm">Assign</button>
-              </form>
+              <select name="assignments[<%= p.athlete_id %>]" form="poolAssignForm">
+                <option value="">— leave unassigned —</option>
+                <% teams.forEach(t => { %><option value="<%= t.id %>"><%= t.name %></option><% }) %>
+              </select>
             </td>
           </tr>
         <% }) %>
       </table>
     </div>
+    <% if (pool.length > 0) { %>
+      <button type="submit" form="poolAssignForm" class="btn btn-primary" style="margin-top:1rem;">Assign</button>
+    <% } %>
   </div>
 </div>

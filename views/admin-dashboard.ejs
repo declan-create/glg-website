@@ -1,6 +1,10 @@
 <div class="dash-shell">
   <div class="dash-side">
     <a href="/admin" class="active">Overview</a>
+    <a href="/admin/users">Users</a>
+    <a href="/admin/gyms">Gyms</a>
+    <a href="/admin/teams">Teams</a>
+    <a href="/admin/athletes">Athletes</a>
     <a href="/account">My Account</a>
   </div>
   <div class="dash-main">
@@ -8,10 +12,30 @@
     <h2>Admin Overview</h2>
 
     <div class="grid grid-4" style="margin-top:1.2rem;">
-      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.users %></div><div style="color:var(--muted);font-size:.8rem;">Total Users</div></div>
-      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.gyms %></div><div style="color:var(--muted);font-size:.8rem;">Gyms Registered</div></div>
-      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.teams %></div><div style="color:var(--muted);font-size:.8rem;">Teams</div></div>
-      <div class="card"><div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.athletes %></div><div style="color:var(--muted);font-size:.8rem;">Athletes</div></div>
+      <a href="/admin/users" class="card" style="text-decoration:none;color:inherit;display:block;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.users %></div>
+        <div style="color:var(--muted);font-size:.8rem;">Total Users</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:.4rem;">
+          <%= statusBreakdown.users.pending || 0 %> pending · <%= statusBreakdown.users.suspended || 0 %> suspended
+        </div>
+      </a>
+      <a href="/admin/gyms" class="card" style="text-decoration:none;color:inherit;display:block;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.gyms %></div>
+        <div style="color:var(--muted);font-size:.8rem;">Gyms Registered</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:.4rem;">
+          <%= statusBreakdown.gyms.pending || 0 %> pending · <%= statusBreakdown.gyms.suspended || 0 %> suspended
+        </div>
+      </a>
+      <a href="/admin/teams" class="card" style="text-decoration:none;color:inherit;display:block;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.teams %></div>
+        <div style="color:var(--muted);font-size:.8rem;">Teams</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:.4rem;"><%= orphanedTeams.length %> without a real gym</div>
+      </a>
+      <a href="/admin/athletes" class="card" style="text-decoration:none;color:inherit;display:block;">
+        <div style="font-family:'Bebas Neue',sans-serif;font-size:2.2rem;color:var(--forest);"><%= stats.athletes %></div>
+        <div style="color:var(--muted);font-size:.8rem;">Athletes</div>
+        <div style="font-size:.72rem;color:var(--muted);margin-top:.4rem;">Click through to assign or approve</div>
+      </a>
     </div>
 
     <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Data Storage</h3>
@@ -36,6 +60,39 @@
       </p>
     </div>
 
+    <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Wedgetail Recording Storage (R2)</h3>
+    <div class="card" style="margin-top:.8rem;border-left:5px solid <%= recordingStorage.enabled ? '#4a9d3f' : '#d64545' %>;">
+      <% if (recordingStorage.enabled) { %>
+        <div style="font-weight:700;color:#2f7a27;font-size:1.05rem;">Configured — recorded clips are being uploaded to R2</div>
+        <p style="color:var(--muted);font-size:.85rem;margin:.4rem 0 0;">
+          Bucket: <code><%= recordingStorage.vars.find(v => v.key === 'R2_BUCKET').value %></code>
+        </p>
+      <% } else { %>
+        <div style="font-weight:700;color:#d64545;font-size:1.05rem;">Not fully configured — recorded clips are being discarded</div>
+        <p style="color:var(--muted);font-size:.85rem;margin:.4rem 0 0;">
+          Judges see "clip not saved (storage not set up)" in Wedgetail until every variable below is set on Railway
+          (exact names, on the actual running service/environment) — rep counting itself is unaffected either way.
+        </p>
+      <% } %>
+      <div class="table-wrap" style="margin-top:.8rem;">
+        <table>
+          <tr><th>Variable</th><th>Status</th></tr>
+          <% recordingStorage.vars.forEach(v => { %>
+            <tr>
+              <td style="font-family:'Roboto Mono',monospace;font-size:.85rem;"><%= v.key %></td>
+              <td>
+                <% if (v.set) { %>
+                  <span style="color:#2f7a27;font-weight:700;">✓ Set<%= v.value ? ` (${v.value})` : '' %></span>
+                <% } else { %>
+                  <span style="color:#d64545;font-weight:700;">✗ Missing</span>
+                <% } %>
+              </td>
+            </tr>
+          <% }) %>
+        </table>
+      </div>
+    </div>
+
     <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Notifications</h3>
     <div class="card" style="margin-top:.8rem;border-left:5px solid <%= adminNotifyConfigured ? '#4a9d3f' : '#d64545' %>;">
       <% if (adminNotifyConfigured) { %>
@@ -53,17 +110,23 @@
     <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Pending League Operator Applications</h3>
     <div class="table-wrap" style="margin-top:.8rem;">
       <table>
-        <tr><th>Name</th><th>Email</th><th>Application</th><th></th></tr>
+        <tr><th>Name</th><th>Email</th><th>Application</th><th>Assign Region</th><th></th></tr>
         <% if (pendingOperators.length === 0) { %>
-          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem;">No pending applications.</td></tr>
+          <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No pending applications.</td></tr>
         <% } %>
         <% pendingOperators.forEach(o => { %>
           <tr>
             <td><%= o.first_name %> <%= o.last_name %></td>
             <td style="color:var(--muted);"><%= o.email %></td>
             <td style="white-space:pre-wrap;font-size:.8rem;max-width:300px;"><%= o.bio %></td>
+            <td>
+              <select name="region_id" form="approveop<%= o.id %>">
+                <option value="">— select region —</option>
+                <% regionOptions.forEach(r => { %><option value="<%= r.id %>"><%= r.name %></option><% }) %>
+              </select>
+            </td>
             <td style="display:flex;gap:.5rem;">
-              <form method="POST" action="/admin/operators/<%= o.id %>/approve"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
+              <form id="approveop<%= o.id %>" method="POST" action="/admin/operators/<%= o.id %>/approve"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
               <form method="POST" action="/admin/operators/<%= o.id %>/reject" onsubmit="return confirm('Reject this application?')"><button class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);" type="submit">Reject</button></form>
             </td>
           </tr>
@@ -74,16 +137,18 @@
     <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Recent Gym Signups</h3>
     <div class="table-wrap" style="margin-top:.8rem;">
       <table>
-        <tr><th>Gym</th><th>Admin Contact</th><th>Region</th><th>Signed Up</th></tr>
+        <tr><th>Gym</th><th>Admin Contact</th><th>Region</th><th>Status</th><th>Signed Up</th><th></th></tr>
         <% if (recentGyms.length === 0) { %>
-          <tr><td colspan="4" style="color:var(--muted);text-align:center;padding:1.5rem;">No gyms yet.</td></tr>
+          <tr><td colspan="6" style="color:var(--muted);text-align:center;padding:1.5rem;">No gyms yet.</td></tr>
         <% } %>
         <% recentGyms.forEach(g => { %>
           <tr>
             <td style="font-weight:600;"><%= g.name %></td>
             <td style="color:var(--muted);"><%= g.first_name %> <%= g.last_name %> — <%= g.email %></td>
             <td><%= g.region_name || '—' %></td>
+            <td><span class="badge <%= g.status==='active' ? 'badge-live' : (g.status==='suspended' ? '' : 'badge-soon') %>" style="<%= g.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= g.status %></span></td>
             <td style="color:var(--muted);font-size:.82rem;"><%= new Date(g.created_at).toLocaleString() %></td>
+            <td><a href="/admin/notifications/gym/<%= g.id %>" style="color:var(--forest);font-weight:700;font-size:.85rem;">Review →</a></td>
           </tr>
         <% }) %>
       </table>
@@ -92,9 +157,9 @@
     <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Recent Athlete Signups</h3>
     <div class="table-wrap" style="margin-top:.8rem;">
       <table>
-        <tr><th>Name</th><th>Email</th><th>Region</th><th>Team</th><th>Signed Up</th></tr>
+        <tr><th>Name</th><th>Email</th><th>Region</th><th>Team</th><th>Status</th><th>Signed Up</th><th></th></tr>
         <% if (recentAthletes.length === 0) { %>
-          <tr><td colspan="5" style="color:var(--muted);text-align:center;padding:1.5rem;">No athletes yet.</td></tr>
+          <tr><td colspan="7" style="color:var(--muted);text-align:center;padding:1.5rem;">No athletes yet.</td></tr>
         <% } %>
         <% recentAthletes.forEach(a => { %>
           <tr>
@@ -102,15 +167,17 @@
             <td style="color:var(--muted);"><%= a.email %></td>
             <td><%= a.region_name || '—' %></td>
             <td><%= a.team_name || 'Unassigned' %></td>
+            <td><span class="badge <%= a.status==='active' ? 'badge-live' : (a.status==='suspended' ? '' : 'badge-soon') %>" style="<%= a.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= a.status %></span></td>
             <td style="color:var(--muted);font-size:.82rem;"><%= new Date(a.created_at).toLocaleString() %></td>
+            <td><a href="/admin/notifications/athlete/<%= a.athlete_id %>" style="color:var(--forest);font-weight:700;font-size:.85rem;">Review →</a></td>
           </tr>
         <% }) %>
       </table>
     </div>
 
     <% if (orphanedTeams.length > 0) { %>
-      <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Teams Without a Gym (<%= orphanedTeams.length %>)</h3>
-      <p class="lede">Captain-run teams not attached to any gym. Not necessarily a problem — just flagged so nothing falls through the cracks.</p>
+      <h3 style="margin-top:2.2rem;font-size:1.4rem;color:var(--forest);">Teams Without a Real Gym (<%= orphanedTeams.length %>)</h3>
+      <p class="lede">Captain-run teams still sitting on the region's "Unassigned" placeholder gym. Not necessarily a problem — just flagged so nothing falls through the cracks.</p>
       <div class="table-wrap" style="margin-top:.8rem;">
         <table>
           <tr><th>Team</th><th>Region</th><th>Captain</th><th>Created</th></tr>

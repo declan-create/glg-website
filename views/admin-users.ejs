@@ -1,0 +1,98 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin">Overview</a>
+    <a href="/admin/users" class="active">Users</a>
+    <a href="/admin/gyms">Gyms</a>
+    <a href="/admin/teams">Teams</a>
+    <a href="/admin/athletes">Athletes</a>
+    <a href="/account">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">GLG HQ</div>
+    <h2>All Users (<%= users.length %>)</h2>
+
+    <% if (error) { %><div class="form-error" style="margin-top:1rem;"><%= error %></div><% } %>
+
+    <form method="GET" action="/admin/users" style="display:flex;gap:.7rem;align-items:end;margin-top:1rem;flex-wrap:wrap;">
+      <div>
+        <label style="margin-top:0;">Role</label>
+        <select name="role" onchange="this.form.submit()">
+          <option value="">All roles</option>
+          <% ['athlete','gym_admin','league_operator','judge','admin'].forEach(r => { %>
+            <option value="<%= r %>" <%= roleFilter===r?'selected':'' %>><%= r %></option>
+          <% }) %>
+        </select>
+      </div>
+      <div>
+        <label style="margin-top:0;">Status</label>
+        <select name="status" onchange="this.form.submit()">
+          <option value="">All statuses</option>
+          <% ['pending','active','suspended'].forEach(s => { %>
+            <option value="<%= s %>" <%= statusFilter===s?'selected':'' %>><%= s %></option>
+          <% }) %>
+        </select>
+      </div>
+    </form>
+
+    <h3 style="margin-top:1.8rem;font-size:1.2rem;color:var(--forest);">Add a User</h3>
+    <div class="card" style="margin-top:.6rem;">
+      <form method="POST" action="/admin/users/new" style="display:grid;grid-template-columns:1.3fr 1fr 1fr 1fr 1fr auto;gap:.6rem;align-items:end;">
+        <div><label style="margin-top:0;">Email</label><input type="email" name="email" required></div>
+        <div><label style="margin-top:0;">Password</label><input type="text" name="password" required minlength="6"></div>
+        <div><label style="margin-top:0;">First Name</label><input type="text" name="first_name" required></div>
+        <div><label style="margin-top:0;">Last Name</label><input type="text" name="last_name"></div>
+        <div>
+          <label style="margin-top:0;">Role</label>
+          <select name="role" id="newUserRole" onchange="document.getElementById('newUserRegionWrap').style.display = this.value==='league_operator' ? 'block' : 'none';">
+            <option value="athlete">athlete</option>
+            <option value="gym_admin">gym_admin</option>
+            <option value="league_operator">league_operator</option>
+            <option value="judge">judge</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+        <button type="submit" class="btn btn-primary btn-sm">Add</button>
+        <div id="newUserRegionWrap" style="display:none;grid-column:1/-1;">
+          <label style="margin-top:0;">Region (for league_operator)</label>
+          <select name="region_id">
+            <option value="">— select region —</option>
+            <% regions.forEach(r => { %><option value="<%= r.id %>"><%= r.name %></option><% }) %>
+          </select>
+        </div>
+      </form>
+    </div>
+
+    <div class="table-wrap" style="margin-top:1.2rem;">
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Role</th><th>Status</th><th>Notes</th><th></th></tr>
+        <% users.forEach(u => { %>
+          <tr>
+            <td style="font-weight:600;"><%= u.first_name %> <%= u.last_name %></td>
+            <td style="color:var(--muted);"><%= u.email %></td>
+            <td><%= u.role %></td>
+            <td>
+              <span class="badge <%= u.status==='active' ? 'badge-live' : (u.status==='suspended' ? '' : 'badge-soon') %>" style="<%= u.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= u.status || 'active' %></span>
+            </td>
+            <td style="color:var(--muted);font-size:.8rem;">
+              <%= u.owns_gym_name ? `Runs ${u.owns_gym_name}` : '' %>
+              <%= u.captain_of_team ? `Captains ${u.captain_of_team}` : '' %>
+            </td>
+            <td style="display:flex;gap:.4rem;flex-wrap:wrap;">
+              <% if (u.status !== 'active') { %>
+                <form method="POST" action="/admin/users/<%= u.id %>/status"><input type="hidden" name="status" value="active"><button class="btn btn-primary btn-sm" type="submit">Activate</button></form>
+              <% } %>
+              <% if (u.status !== 'suspended') { %>
+                <form method="POST" action="/admin/users/<%= u.id %>/status" onsubmit="return confirm('Suspend this user?')"><input type="hidden" name="status" value="suspended"><button class="btn btn-outline btn-sm" type="submit">Suspend</button></form>
+              <% } %>
+              <% if (u.role === 'athlete' && !u.captain_of_team) { %>
+                <form method="POST" action="/admin/users/<%= u.id %>/make-captain" onsubmit="return confirm('Make this athlete a team captain?')"><button class="btn btn-outline btn-sm" type="submit">Make Captain</button></form>
+              <% } %>
+              <form method="POST" action="/admin/users/<%= u.id %>/delete" onsubmit="return confirm('Delete this account? This cannot be undone.')"><button class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);" type="submit">Delete</button></form>
+            </td>
+          </tr>
+        <% }) %>
+        <% if (users.length === 0) { %><tr><td colspan="6" style="color:var(--muted);text-align:center;padding:1.5rem;">No users match that filter.</td></tr><% } %>
+      </table>
+    </div>
+  </div>
+</div>

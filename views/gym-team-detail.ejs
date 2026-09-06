@@ -1,18 +1,18 @@
 <div class="dash-shell">
   <div class="dash-side">
-    <a href="<%= gym ? '/gym' : '/profile' %>">Dashboard</a>
-    <% if (gym) { %><a href="/gym/fixtures">Fixtures</a><% } %>
+    <a href="<%= currentUser.role === 'gym_admin' ? '/gym' : '/profile' %>">Dashboard</a>
+    <% if (hasRealGym) { %><a href="/gym/fixtures">Fixtures</a><% } %>
     <a href="/account">My Account</a>
     <a href="/guide/gym">Gym Guide</a>
   </div>
   <div class="dash-main">
-    <div class="section-eyebrow"><%= gym ? gym.name : 'Captain-run team — no gym yet' %></div>
+    <div class="section-eyebrow"><%= hasRealGym ? gym.name : 'Captain-run team — no gym yet (Unassigned)' %></div>
     <h2><%= team.name %></h2>
-    <% if (isCaptain && gym) { %><p class="lede" style="margin-top:-.5rem;">You're this team's captain — <%= gym.name %>'s admin can also manage this roster.</p><% } %>
+    <% if (isCaptain && hasRealGym) { %><p class="lede" style="margin-top:-.5rem;">You're this team's captain — <%= gym.name %>'s admin can also manage this roster.</p><% } %>
 
     <% if (welcome) { %><div class="form-success">Your team is set up! Add teammates below, or request a gym further down whenever you're ready.</div><% } %>
     <% if (query.saved) { %><div class="form-success">Member details updated.</div><% } %>
-    <% if (query.added) { %><div class="form-success">New member added to the team.</div><% } %>
+    <% if (query.added) { %><div class="form-success"><%= query.addedCount || '' %> new member<%= query.addedCount == 1 ? '' : 's' %> added to the team.</div><% } %>
     <% if (query.requested) { %><div class="form-success">Your request has been sent — you'll get an email once it's decided.</div><% } %>
     <% if (query.teamsaved) { %><div class="form-success">Team details updated.</div><% } %>
     <% if (query.error === 'teamnametaken') { %><div class="form-error">Another team in your region already has that name.</div><% } %>
@@ -101,7 +101,22 @@
             </select>
           </div>
         </div>
-        <div style="display:flex;gap:.6rem;margin-top:.6rem;">
+        <div style="display:flex;gap:.6rem;margin-top:.6rem;align-items:center;flex-wrap:wrap;">
+          <% if (r.status === 'pending') { %>
+            <span style="font-size:.8rem;font-weight:700;color:#a66a00;">PENDING APPROVAL</span>
+            <form method="POST" action="/gym/team/<%= team.id %>/roster/<%= r.athlete_id %>/approve">
+              <button type="submit" class="btn btn-primary btn-sm">Approve</button>
+            </form>
+          <% } else if (r.status === 'suspended') { %>
+            <span style="font-size:.8rem;font-weight:700;color:var(--danger);">SUSPENDED</span>
+            <form method="POST" action="/gym/team/<%= team.id %>/roster/<%= r.athlete_id %>/approve">
+              <button type="submit" class="btn btn-outline btn-sm">Reactivate</button>
+            </form>
+          <% } else { %>
+            <form method="POST" action="/gym/team/<%= team.id %>/roster/<%= r.athlete_id %>/suspend" onsubmit="return confirm('Suspend this member? They will be flagged as inactive.')">
+              <button type="submit" class="btn btn-outline btn-sm">Suspend</button>
+            </form>
+          <% } %>
           <form method="POST" action="/gym/team/<%= team.id %>/remove-athlete" onsubmit="return confirm('Remove this member from the team?')">
             <input type="hidden" name="athlete_id" value="<%= r.athlete_id %>">
             <button type="submit" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);">Remove from Team</button>
@@ -118,50 +133,78 @@
       <button type="submit" form="rosterBatchForm" class="btn btn-primary" style="margin-top:1rem;">Save All Changes</button>
     <% } %>
 
-    <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Add a New Member</h3>
-    <p class="lede">For anyone who hasn't signed up themselves yet. They'll get an email with the default password <strong>GLGWelcome2026!</strong> and a link to log in.</p>
-    <div class="card">
-      <form method="POST" action="/gym/team/<%= team.id %>/add-member" style="display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr .7fr 1.3fr auto;gap:.7rem;align-items:end;">
-        <div>
-          <label style="margin-top:0;">First Name</label>
-          <input type="text" name="first_name" required>
-        </div>
-        <div>
-          <label style="margin-top:0;">Last Name</label>
-          <input type="text" name="last_name">
-        </div>
-        <div>
-          <label style="margin-top:0;">Email</label>
-          <input type="email" name="email" required>
-        </div>
-        <div>
-          <label style="margin-top:0;">Phone</label>
-          <input type="text" name="phone">
-        </div>
-        <div>
-          <label style="margin-top:0;">Gender</label>
-          <select name="gender" required>
-            <option value="">—</option>
-            <option value="M">M</option>
-            <option value="F">F</option>
-          </select>
-        </div>
-        <div>
-          <label style="margin-top:0;">Category</label>
-          <select name="category">
-            <option value="">— Unassigned —</option>
-            <option value="mens_singles">Men's Singles</option>
-            <option value="womens_singles">Women's Singles</option>
-            <option value="mens_doubles">Men's Doubles</option>
-            <option value="womens_doubles">Women's Doubles</option>
-            <option value="mixed_doubles">Mixed Doubles</option>
-          </select>
-        </div>
-        <button type="submit" class="btn btn-primary btn-sm">Add Member</button>
-      </form>
+    <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Add New Members</h3>
+    <p class="lede">For anyone who hasn't signed up themselves yet. They'll get an email with the default password <strong>GLGWelcome2026!</strong> and a link to log in. Add as many rows as you like with the + button, then submit them all at once.</p>
+    <% if (query.addErrors) { %>
+      <div class="form-error">
+        <%= query.addedCount %> member(s) added. The rest had problems and weren't added: <%= query.addErrors %>
+      </div>
+    <% } %>
+    <form id="addMembersForm" method="POST" action="/gym/team/<%= team.id %>/add-members"></form>
+    <div id="newMemberRows"></div>
+    <div style="display:flex;gap:.7rem;margin-top:.8rem;">
+      <button type="button" class="btn btn-outline btn-sm" onclick="addNewMemberRow()">+ Add Another</button>
+      <button type="submit" form="addMembersForm" class="btn btn-primary btn-sm">Add Member(s)</button>
     </div>
 
-    <% if (!team.gym_id) { %>
+    <template id="newMemberRowTemplate">
+      <div class="card" style="margin-top:.8rem;">
+        <div style="display:grid;grid-template-columns:1fr 1fr 1.4fr 1fr .7fr 1.3fr auto;gap:.7rem;align-items:end;">
+          <div>
+            <label style="margin-top:0;">First Name</label>
+            <input type="text" name="newmembers[__IDX__][first_name]" form="addMembersForm" required>
+          </div>
+          <div>
+            <label style="margin-top:0;">Last Name</label>
+            <input type="text" name="newmembers[__IDX__][last_name]" form="addMembersForm">
+          </div>
+          <div>
+            <label style="margin-top:0;">Email</label>
+            <input type="email" name="newmembers[__IDX__][email]" form="addMembersForm" required>
+          </div>
+          <div>
+            <label style="margin-top:0;">Phone</label>
+            <input type="text" name="newmembers[__IDX__][phone]" form="addMembersForm">
+          </div>
+          <div>
+            <label style="margin-top:0;">Gender</label>
+            <select name="newmembers[__IDX__][gender]" form="addMembersForm" required>
+              <option value="">—</option>
+              <option value="M">M</option>
+              <option value="F">F</option>
+            </select>
+          </div>
+          <div>
+            <label style="margin-top:0;">Category</label>
+            <select name="newmembers[__IDX__][category]" form="addMembersForm">
+              <option value="">— Unassigned —</option>
+              <option value="mens_singles">Men's Singles</option>
+              <option value="womens_singles">Women's Singles</option>
+              <option value="mens_doubles">Men's Doubles</option>
+              <option value="womens_doubles">Women's Doubles</option>
+              <option value="mixed_doubles">Mixed Doubles</option>
+            </select>
+          </div>
+          <button type="button" class="btn btn-outline btn-sm" style="border-color:var(--danger);color:var(--danger);" onclick="this.closest('.card').remove()">Remove</button>
+        </div>
+      </div>
+    </template>
+
+    <script>
+      let newMemberRowCount = 0;
+      function addNewMemberRow() {
+        const tpl = document.getElementById('newMemberRowTemplate');
+        const clone = tpl.content.cloneNode(true);
+        clone.querySelectorAll('[name]').forEach(el => {
+          el.name = el.name.replace('__IDX__', newMemberRowCount);
+        });
+        document.getElementById('newMemberRows').appendChild(clone);
+        newMemberRowCount++;
+      }
+      addNewMemberRow(); // start with one row
+    </script>
+
+    <% if (!hasRealGym) { %>
       <h3 style="margin-top:2.2rem;font-size:1.3rem;color:var(--forest);">Attach Your Team to a Gym</h3>
       <% if (pendingRequest) { %>
         <div class="card" style="text-align:center;color:var(--muted);padding:1.5rem;">
@@ -206,6 +249,6 @@
       <% } %>
     <% } %>
 
-    <a href="<%= gym ? '/gym' : '/profile' %>" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">← Back to Dashboard</a>
+    <a href="<%= currentUser.role === 'gym_admin' ? '/gym' : '/profile' %>" style="display:inline-block;margin-top:1.5rem;color:var(--forest);font-weight:700;font-family:'Barlow Condensed',sans-serif;">← Back to Dashboard</a>
   </div>
 </div>

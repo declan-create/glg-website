@@ -1,0 +1,49 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin">Overview</a>
+    <a href="/admin/users">Users</a>
+    <a href="/admin/gyms">Gyms</a>
+    <a href="/admin/teams">Teams</a>
+    <a href="/admin/athletes" class="active">Athletes</a>
+    <a href="/account">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">GLG HQ</div>
+    <h2>All Athletes (<%= athletes.length %>)</h2>
+    <p class="lede">Assign anyone still sitting unassigned straight to a team from here — the same control a gym has for its own pool, available globally.</p>
+
+    <div class="table-wrap" style="margin-top:1rem;">
+      <table>
+        <tr><th>Name</th><th>Email</th><th>Team</th><th>Status</th><th>Assign to Team</th><th></th></tr>
+        <% athletes.forEach(a => { %>
+          <tr id="athlete-<%= a.athlete_id %>">
+            <td style="font-weight:600;"><%= a.first_name %> <%= a.last_name %></td>
+            <td style="color:var(--muted);"><%= a.email %></td>
+            <td><%= a.team_name || '— unassigned —' %></td>
+            <td><span class="badge <%= a.status==='active' ? 'badge-live' : (a.status==='suspended' ? '' : 'badge-soon') %>" style="<%= a.status==='suspended' ? 'background:#f7d7d7;color:var(--danger);' : '' %>"><%= a.status %></span></td>
+            <td>
+              <form method="POST" action="/admin/athletes/<%= a.athlete_id %>/assign-team" style="display:flex;gap:.4rem;">
+                <select name="team_id" style="max-width:220px;">
+                  <option value="">— unassigned —</option>
+                  <% (teamsByRegion[a.region_id || ''] || []).forEach(t => { %>
+                    <option value="<%= t.id %>" <%= String(t.id)===String(a.team_id) ? 'selected' : '' %>><%= t.name %></option>
+                  <% }) %>
+                </select>
+                <button type="submit" class="btn btn-outline btn-sm">Set</button>
+              </form>
+            </td>
+            <td style="display:flex;gap:.4rem;">
+              <% if (a.status !== 'active') { %>
+                <form method="POST" action="/admin/athletes/<%= a.athlete_id %>/status"><input type="hidden" name="status" value="active"><button class="btn btn-primary btn-sm" type="submit">Approve</button></form>
+              <% } %>
+              <% if (a.status !== 'suspended') { %>
+                <form method="POST" action="/admin/athletes/<%= a.athlete_id %>/status" onsubmit="return confirm('Suspend this athlete?')"><input type="hidden" name="status" value="suspended"><button class="btn btn-outline btn-sm" type="submit">Suspend</button></form>
+              <% } %>
+            </td>
+          </tr>
+        <% }) %>
+        <% if (athletes.length === 0) { %><tr><td colspan="6" style="color:var(--muted);text-align:center;padding:1.5rem;">No athletes yet.</td></tr><% } %>
+      </table>
+    </div>
+  </div>
+</div>

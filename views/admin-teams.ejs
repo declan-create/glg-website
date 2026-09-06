@@ -1,0 +1,32 @@
+<div class="dash-shell">
+  <div class="dash-side">
+    <a href="/admin">Overview</a>
+    <a href="/admin/users">Users</a>
+    <a href="/admin/gyms">Gyms</a>
+    <a href="/admin/teams" class="active">Teams</a>
+    <a href="/admin/athletes">Athletes</a>
+    <a href="/account">My Account</a>
+  </div>
+  <div class="dash-main">
+    <div class="section-eyebrow">GLG HQ</div>
+    <h2>All Teams (<%= teams.length %>)</h2>
+    <p class="lede">Full makeup of every team across every region. To rename, re-divide or remove a team, use its region's manage page — linked below.</p>
+
+    <div class="table-wrap" style="margin-top:1rem;">
+      <table>
+        <tr><th>Team</th><th>Gym</th><th>Region</th><th>Captain</th><th>Roster</th><th></th></tr>
+        <% teams.forEach(t => { %>
+          <tr>
+            <td style="font-weight:600;"><%= t.name %></td>
+            <td><%= t.gym_is_unassigned ? 'Unassigned' : (t.gym_name || '—') %></td>
+            <td><%= t.region_name || '—' %></td>
+            <td style="color:var(--muted);"><%= t.captain_first_name ? `${t.captain_first_name} ${t.captain_last_name}` : '—' %></td>
+            <td><%= t.roster_count %></td>
+            <td><a href="/admin/region/<%= t.region_id %>" style="color:var(--forest);font-weight:700;font-size:.85rem;">Manage region →</a></td>
+          </tr>
+        <% }) %>
+        <% if (teams.length === 0) { %><tr><td colspan="6" style="color:var(--muted);text-align:center;padding:1.5rem;">No teams yet.</td></tr><% } %>
+      </table>
+    </div>
+  </div>
+</div>
