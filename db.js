@@ -268,6 +268,44 @@ if (!teamsCols.includes('captain_user_id')) {
   db.exec(`ALTER TABLE teams ADD COLUMN captain_user_id INTEGER REFERENCES users(id);`);
 }
 
+// ---- Admin control layer: status fields + franchise (league) scoping ----
+// `status` unifies the old one-off `approved` flag (which only ever covered
+// league_operator applications) into a single pending/active/suspended state
+// that now applies to every user and every gym. Existing rows (already-live
+// accounts and the seeded demo data) are backfilled to 'active' so nothing
+// that already worked gets locked out retroactively — only NEW signups from
+// here on start at 'pending' and need an approval action.
+const usersCols = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+if (!usersCols.includes('status')) {
+  db.exec(`ALTER TABLE users ADD COLUMN status TEXT DEFAULT 'active';`);
+  db.exec(`UPDATE users SET status = CASE WHEN approved = 0 THEN 'pending' ELSE 'active' END;`);
+}
+if (!usersCols.includes('region_id')) {
+  // Used to scope a league_operator ("franchisee") to the one region they
+  // run. NULL for every other role — admin's reach is global by role alone,
+  // gym/captain reach is derived from gyms.id / teams.captain_user_id instead.
+  db.exec(`ALTER TABLE users ADD COLUMN region_id INTEGER REFERENCES regions(id);`);
+}
+
+const gymsCols = db.prepare("PRAGMA table_info(gyms)").all().map(c => c.name);
+if (!gymsCols.includes('status')) {
+  db.exec(`ALTER TABLE gyms ADD COLUMN status TEXT DEFAULT 'active';`);
+}
+if (!gymsCols.includes('is_unassigned')) {
+  // Marks the one auto-created "Unassigned" placeholder gym per region (see
+  // getUnassignedGym in server.js) so it can be told apart from a real gym
+  // that simply has no admin yet (e.g. the old admin-created auto-placeholders).
+  db.exec(`ALTER TABLE gyms ADD COLUMN is_unassigned INTEGER DEFAULT 0;`);
+}
+
+if (!usersCols.includes('password_expires_at')) {
+  // Judge accounts use placeholder (plus-addressed) emails that nobody
+  // actually reads — the login itself has to be handed to the judge in
+  // person on the day, so its password is short-lived rather than a
+  // standing secret. NULL for every other role (never expires).
+  db.exec(`ALTER TABLE users ADD COLUMN password_expires_at TEXT;`);
+}
+
 // Team names must be unique within a region — previously unenforced for both
 // gym-created and (new) captain-created teams. A partial/unique index rather
 // than an app-level-only check so it holds even under concurrent signups.

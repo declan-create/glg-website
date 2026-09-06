@@ -131,7 +131,74 @@ function requireCanManageTeam(req, res, next) {
   next();
 }
 
-const JUDGE_DEFAULT_PASSWORD = 'GLGWelcome2026!';
+// ---- Unassigned gym: the default home for a gym-less captain-run team ----
+// One per region, created lazily on first use and reused after that. Real
+// gyms all have an admin_user_id and status flows through the normal
+// pending/active/suspended approval path; this one is a system placeholder —
+// always 'active', never has an admin, flagged is_unassigned so the rest of
+// the app (and the admin dashboard's "needs a gym" list) can tell it apart
+// from a genuine gym that just hasn't been claimed yet.
+function getUnassignedGym(regionId) {
+  let gym = db.prepare("SELECT * FROM gyms WHERE region_id=? AND is_unassigned=1").get(regionId);
+  if (!gym) {
+    const id = db.prepare("INSERT INTO gyms (name, region_id, admin_user_id, address, status, is_unassigned) VALUES ('Unassigned', ?, NULL, NULL, 'active', 1)")
+      .run(regionId).lastInsertRowid;
+    gym = db.prepare("SELECT * FROM gyms WHERE id=?").get(id);
+  }
+  return gym;
+}
+function isRealGym(gym) { return !!(gym && !gym.is_unassigned); }
+
+// ---- Admin control layer: role hierarchy ----
+// admin        -> everything, everywhere
+// league_operator ("franchisee") -> everything within their assigned region_id
+// gym_admin    -> everything within their own gym (its teams, captains, athletes)
+// captain      -> (role stays 'athlete') everything within their own team's roster
+// A single helper answers "can this session user act on this target user?"
+// so the admin, league, and gym dashboards can all call the same status/role
+// actions instead of three parallel copies of the same logic.
+function targetUserScope(targetUser) {
+  // Resolve the chain of custody for a user: which gym (if any) and which
+  // region they sit under, so a higher-up's reach can be checked in one go.
+  const athlete = db.prepare("SELECT * FROM athletes WHERE user_id=?").get(targetUser.id);
+  const team = athlete && athlete.team_id ? db.prepare("SELECT * FROM teams WHERE id=?").get(athlete.team_id) : null;
+  const captainTeam = db.prepare("SELECT * FROM teams WHERE captain_user_id=?").get(targetUser.id);
+  const ownedGym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(targetUser.id);
+  const gymId = ownedGym ? ownedGym.id : (team && isRealGymId(team.gym_id) ? team.gym_id : null);
+  const regionId = targetUser.region_id || athlete?.region_id || team?.region_id || (captainTeam && captainTeam.region_id) || (ownedGym && ownedGym.region_id) || null;
+  return { athlete, team: team || captainTeam, gymId, regionId };
+}
+function isRealGymId(gymId) {
+  if (!gymId) return false;
+  const gym = db.prepare("SELECT is_unassigned FROM gyms WHERE id=?").get(gymId);
+  return !!(gym && !gym.is_unassigned);
+}
+function canManageUser(actor, targetUser) {
+  if (!actor) return false;
+  if (actor.role === 'admin') return true;
+  if (targetUser.id === actor.id) return false; // acting on yourself goes through /account, not admin actions
+  const scope = targetUserScope(targetUser);
+  if (actor.role === 'league_operator') return !!(actor.region_id && scope.regionId === actor.region_id);
+  const actorGym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(actor.id);
+  if (actor.role === 'gym_admin' && actorGym) return scope.gymId === actorGym.id;
+  // Team captain (role stays 'athlete') managing their own roster
+  const captainOf = db.prepare("SELECT * FROM teams WHERE captain_user_id=?").get(actor.id);
+  if (captainOf && scope.team && scope.team.id === captainOf.id) return true;
+  return false;
+}
+function requireAdminOrScoped(req, res, next) {
+  // Gate for the shared /admin/* user & gym actions: full admin always
+  // passes; league_operator/gym_admin/captain pass only for targets within
+  // their own scope, checked per-route via canManageUser.
+  if (!req.session.user || !['admin', 'league_operator', 'gym_admin', 'athlete'].includes(req.session.user.role)) {
+    return res.status(403).render('error', { title: 'Access Denied', message: "You don't have permission to do that." });
+  }
+  next();
+}
+
+// Judge accounts previously shared one fixed default password
+// ('GLGWelcome2026!'); replaced by per-judge random passwords with a
+// 24-hour expiry (see autoCreateGymJudges / rotateGymJudgePasswords below).
 function slugifyForEmail(name) {
   return (name || 'gym').toLowerCase().replace(/[^a-z0-9]+/g, '').slice(0, 24) || 'gym';
 }
@@ -140,23 +207,53 @@ function slugifyForEmail(name) {
 // notification lands in the inbox they already check — no separate judge
 // inboxes to set up. Idempotent: skips any category that already has a
 // judge account for this gym (safe to call again from the dashboard).
-// Returns [{ category, email, wasNew }, ...] for all 5 categories.
+// These addresses are placeholders nobody actually reads day-to-day, so
+// each judge gets its own random password (not a shared default) with a
+// 24-hour expiry — handed to whoever's judging that category in person on
+// the day, not relied on as a standing secret.
+// Returns [{ category, email, wasNew, password }, ...] for all 5 categories
+// — password is only set (and only meaningful) for accounts touched just now.
 function autoCreateGymJudges(gym, adminEmail) {
   const domain = (adminEmail.split('@')[1] || '').trim();
   const gymSlug = slugifyForEmail(gym.name);
-  const hash = bcrypt.hashSync(JUDGE_DEFAULT_PASSWORD, 10);
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
   const results = [];
   for (const category of Object.keys(CATEGORY_LABEL)) {
     const email = `${category}+${gymSlug}@${domain}`;
     let judge = db.prepare("SELECT * FROM users WHERE email=?").get(email);
     let wasNew = false;
+    let password = null;
     if (!judge) {
-      const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name) VALUES (?,?,?,?,?)")
-        .run(email, hash, 'judge', `${CATEGORY_LABEL[category]} Judge`, gym.name).lastInsertRowid;
+      password = generateTempPassword();
+      const hash = bcrypt.hashSync(password, 10);
+      const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,password_expires_at) VALUES (?,?,?,?,?,?)")
+        .run(email, hash, 'judge', `${CATEGORY_LABEL[category]} Judge`, gym.name, expiresAt).lastInsertRowid;
       judge = db.prepare("SELECT * FROM users WHERE id=?").get(uid);
       wasNew = true;
     }
-    results.push({ category, email, wasNew });
+    results.push({ category, email, wasNew, password });
+  }
+  return results;
+}
+
+// Rotates the password (and resets the 24-hour expiry) for a gym's 5
+// existing standing judge logins — the "Generate Passwords" control for
+// competition day, separate from creating the accounts in the first place.
+// Returns the same shape as autoCreateGymJudges, password always set for
+// any judge that actually exists.
+function rotateGymJudgePasswords(gym, adminEmail) {
+  const domain = (adminEmail.split('@')[1] || '').trim();
+  const gymSlug = slugifyForEmail(gym.name);
+  const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
+  const results = [];
+  for (const category of Object.keys(CATEGORY_LABEL)) {
+    const email = `${category}+${gymSlug}@${domain}`;
+    const judge = db.prepare("SELECT * FROM users WHERE email=?").get(email);
+    if (!judge) { results.push({ category, email, exists: false, password: null }); continue; }
+    const password = generateTempPassword();
+    const hash = bcrypt.hashSync(password, 10);
+    db.prepare("UPDATE users SET password_hash=?, password_expires_at=? WHERE id=?").run(hash, expiresAt, judge.id);
+    results.push({ category, email, exists: true, password });
   }
   return results;
 }
@@ -208,7 +305,13 @@ app.post('/login', authLimiter, (req, res) => {
   if (user.role === 'league_operator' && !user.approved) {
     return res.render('login', { title: 'Log In', error: 'Your league operator application is still pending approval.', next: '/' });
   }
-  req.session.user = { id: user.id, email: user.email, role: user.role, first_name: user.first_name, last_name: user.last_name };
+  if (user.status === 'suspended') {
+    return res.render('login', { title: 'Log In', error: 'This account has been suspended. Contact GLG HQ if you think that\'s wrong.', next: '/' });
+  }
+  if (user.role === 'judge' && user.password_expires_at && new Date(user.password_expires_at) < new Date()) {
+    return res.render('login', { title: 'Log In', error: 'This judge password has expired — ask your gym admin to generate a new one for today.', next: '/' });
+  }
+  req.session.user = { id: user.id, email: user.email, role: user.role, first_name: user.first_name, last_name: user.last_name, region_id: user.region_id, status: user.status };
   const dest = next && next !== 'undefined' ? next : roleHome(user.role);
   res.redirect(dest);
 });
@@ -319,15 +422,22 @@ app.post('/signup/athlete', authLimiter, (req, res) => {
   }
 
   const hash = bcrypt.hashSync(password, 10);
-  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,gender,dob,phone) VALUES (?,?,?,?,?,?,?,?)`)
+  // Every new signup starts 'pending' — the gym (if the athlete lands on one
+  // of its teams), the captain (if it's a captain-run team), or admin (if
+  // unattached) has to approve them before they count as active on a roster.
+  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,gender,dob,phone,status) VALUES (?,?,?,?,?,?,?,?,'pending')`)
     .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender, dob || null, (phone || '').trim() || null).lastInsertRowid;
 
   const wantsTeam = team_choice === 'assign' ? 1 : 0;
   let chosenTeamId = team_choice === 'pick' && team_id ? team_id : null;
   let newTeamId = null;
   if (team_choice === 'captain') {
-    newTeamId = db.prepare(`INSERT INTO teams (name, gym_id, region_id, division, captain_user_id) VALUES (?,NULL,?,?,?)`)
-      .run(cleanTeamName, region_id, 'Open', uid).lastInsertRowid;
+    // Gym-less captain teams get the region's "Unassigned" placeholder gym
+    // instead of NULL — makes them visible in competition setup right away,
+    // and the captain can still request a real gym later (unchanged flow).
+    const unassignedGym = getUnassignedGym(region_id);
+    newTeamId = db.prepare(`INSERT INTO teams (name, gym_id, region_id, division, captain_user_id) VALUES (?,?,?,?,?)`)
+      .run(cleanTeamName, unassignedGym.id, region_id, 'Open', uid).lastInsertRowid;
     chosenTeamId = newTeamId;
   }
   db.prepare(`INSERT INTO athletes (user_id, region_id, team_id, wants_team) VALUES (?,?,?,?)`)
@@ -387,7 +497,7 @@ app.get('/api/regions/:id/gyms', requireLogin, (req, res) => {
 // ---- Team Captain: request to attach a gym-less team to a gym ----
 app.post('/gym/team/:id/request-gym', requireLogin, requireCanManageTeam, (req, res) => {
   const team = req.managedTeam;
-  if (team.gym_id) return res.redirect('/gym/team/' + req.params.id + '?error=alreadyhasgym');
+  if (isRealGymId(team.gym_id)) return res.redirect('/gym/team/' + req.params.id + '?error=alreadyhasgym');
   const existingPending = db.prepare("SELECT id FROM gym_attachment_requests WHERE team_id=? AND status='pending'").get(team.id);
   if (existingPending) return res.redirect('/gym/team/' + req.params.id + '?error=pendingexists');
 
@@ -478,10 +588,12 @@ app.post('/signup/gym', authLimiter, (req, res) => {
   }
 
   const hash = bcrypt.hashSync(password, 10);
-  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,phone) VALUES (?,?,?,?,?,?)`)
+  // Pending until GLG HQ approves the gym's admission — the click-through
+  // notification review on the admin dashboard is what flips this to active.
+  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,phone,status) VALUES (?,?,?,?,?,?,'pending')`)
     .run(email.trim().toLowerCase(), hash, 'gym_admin', (admin_first_name || gym_name).trim().slice(0,80), (admin_last_name || '').trim().slice(0,80), (phone || '').trim() || null).lastInsertRowid;
 
-  const gymId = db.prepare(`INSERT INTO gyms (name, region_id, admin_user_id, address) VALUES (?,?,?,?)`)
+  const gymId = db.prepare(`INSERT INTO gyms (name, region_id, admin_user_id, address, status) VALUES (?,?,?,?,'pending')`)
     .run(gym_name.trim().slice(0,120), region_id, uid, address ? address.trim().slice(0,200) : null).lastInsertRowid;
 
   // Allow comma-separated team names, creating 1+ teams at signup (flexibility: 1 gym -> many teams).
@@ -510,15 +622,17 @@ app.post('/signup/gym', authLimiter, (req, res) => {
   });
 
   // Auto-provision the 5 standing category-judge logins for this gym — no
-  // manual per-judge setup needed. All 5 route to the admin's own inbox via
-  // plus-addressing, and they're free to reassign/reset any of them later.
+  // manual per-judge setup needed. Each gets its own random password
+  // (24-hour expiry) since these placeholder addresses aren't inboxes
+  // anyone actually checks — the admin relays login + password to whoever's
+  // judging each category on the day, or generates fresh ones any time from
+  // the dashboard's "Generate Passwords" button.
   const gymRow = db.prepare("SELECT * FROM gyms WHERE id=?").get(gymId);
   const judges = autoCreateGymJudges(gymRow, email.trim().toLowerCase());
   mailer.send(mailer.gymJudgesCreatedEmail({
     user: { first_name: (admin_first_name || '').trim(), email: email.trim().toLowerCase() },
     gymName: gym_name.trim(),
-    judges: judges.map(j => ({ label: CATEGORY_LABEL[j.category], email: j.email })),
-    tempPassword: JUDGE_DEFAULT_PASSWORD,
+    judges: judges.map(j => ({ label: CATEGORY_LABEL[j.category], email: j.email, password: j.password })),
   }));
   if (gymNotice) mailer.send(gymNotice);
 
@@ -550,7 +664,7 @@ app.post('/signup/league', authLimiter, (req, res) => {
   }
   const hash = bcrypt.hashSync(password, 10);
   const safePitch = (pitch || '').trim().slice(0, 2000);
-  db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,phone,bio,approved) VALUES (?,?,?,?,?,?,?,0)`)
+  db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,phone,bio,approved,status) VALUES (?,?,?,?,?,?,?,0,'pending')`)
     .run(email.trim().toLowerCase(), hash, 'league_operator', first_name.trim().slice(0,80), last_name.trim().slice(0,80), (phone || '').trim() || null, `Proposed region: ${proposed_region.trim().slice(0,120)}\n\n${safePitch}`);
 
   mailer.send(mailer.leagueApplicationReceivedEmail({
@@ -653,10 +767,12 @@ app.post('/account/change-password', requireLogin, (req, res) => {
 
 // ============ GYM ADMIN DASHBOARD ============
 
-app.get('/gym', requireLogin, requireRole('gym_admin'), (req, res) => {
+// Shared by GET /gym and the two judge-password actions below, since both
+// of those need to re-render the full dashboard (with a one-time password
+// table bolted on) rather than redirect and lose that data.
+function renderGymDashboard(req, res, extra = {}) {
   const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
   const teams = db.prepare("SELECT * FROM teams WHERE gym_id=?").all(gym.id);
-  const teamIds = teams.map(t => t.id);
   const rosterCounts = {};
   for (const t of teams) {
     rosterCounts[t.id] = db.prepare("SELECT COUNT(*) c FROM athletes WHERE team_id=?").get(t.id).c;
@@ -690,7 +806,15 @@ app.get('/gym', requireLogin, requireRole('gym_admin'), (req, res) => {
     WHERE r.gym_id=? AND r.status='pending' ORDER BY r.created_at
   `).all(gym.id);
 
-  res.render('gym-dashboard', { title: gym.name, gym, teams, rosterCounts, pool, pendingAttachmentRequests, standingJudges, allJudgesExist, welcome: req.query.welcome, judgesGenerated: req.query.judgesGenerated });
+  res.render('gym-dashboard', {
+    title: gym.name, gym, teams, rosterCounts, pool, pendingAttachmentRequests, standingJudges, allJudgesExist,
+    welcome: req.query.welcome, judgesGenerated: req.query.judgesGenerated, generatedPasswords: null,
+    ...extra,
+  });
+}
+
+app.get('/gym', requireLogin, requireRole('gym_admin'), (req, res) => {
+  renderGymDashboard(req, res);
 });
 
 app.post('/gym/judges/generate', requireLogin, requireRole('gym_admin'), (req, res) => {
@@ -700,10 +824,24 @@ app.post('/gym/judges/generate', requireLogin, requireRole('gym_admin'), (req, r
   mailer.send(mailer.gymJudgesCreatedEmail({
     user: { first_name: adminUser.first_name, email: adminUser.email },
     gymName: gym.name,
-    judges: judges.map(j => ({ label: CATEGORY_LABEL[j.category], email: j.email })),
-    tempPassword: JUDGE_DEFAULT_PASSWORD,
+    judges: judges.map(j => ({ label: CATEGORY_LABEL[j.category], email: j.email, password: j.password })),
   }));
-  res.redirect('/gym?judgesGenerated=1');
+  // Shown once, right here — these placeholder addresses aren't real inboxes,
+  // so the admin needs the passwords on-screen to relay them, not just emailed.
+  renderGymDashboard(req, res, {
+    generatedPasswords: judges.map(j => ({ label: CATEGORY_LABEL[j.category], email: j.email, password: j.password })),
+  });
+});
+
+// Rotates all 5 judges' passwords — for competition day, or any time the
+// gym admin wants a fresh set (e.g. the last set's 24-hour window lapsed).
+app.post('/gym/judges/generate-passwords', requireLogin, requireRole('gym_admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
+  const adminUser = db.prepare("SELECT email, first_name FROM users WHERE id=?").get(gym.admin_user_id);
+  const rotated = rotateGymJudgePasswords(gym, adminUser.email);
+  renderGymDashboard(req, res, {
+    generatedPasswords: rotated.filter(j => j.exists).map(j => ({ label: CATEGORY_LABEL[j.category], email: j.email, password: j.password })),
+  });
 });
 
 app.post('/gym/teams/new', requireLogin, requireRole('gym_admin'), (req, res) => {
@@ -716,13 +854,19 @@ app.post('/gym/teams/new', requireLogin, requireRole('gym_admin'), (req, res) =>
   res.redirect('/gym');
 });
 
+// Batch pool assignment — one submit sets a team for as many pool athletes
+// as the gym admin filled in, instead of a separate Assign button per row.
+// Rows left on "leave unassigned" are simply skipped.
 app.post('/gym/pool/assign', requireLogin, requireRole('gym_admin'), (req, res) => {
   const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
-  const { athlete_id, team_id } = req.body;
-  // verify the team belongs to this gym
-  const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(team_id, gym.id);
-  if (team) {
-    db.prepare("UPDATE athletes SET team_id=?, wants_team=0 WHERE id=?").run(team_id, athlete_id);
+  const assignments = req.body.assignments || {};
+  for (const [athleteId, teamId] of Object.entries(assignments)) {
+    if (!teamId) continue; // left unassigned — skip rather than error
+    // verify the team belongs to this gym before trusting a client-supplied id
+    const team = db.prepare("SELECT * FROM teams WHERE id=? AND gym_id=?").get(teamId, gym.id);
+    if (team) {
+      db.prepare("UPDATE athletes SET team_id=?, wants_team=0 WHERE id=?").run(team.id, athleteId);
+    }
   }
   res.redirect('/gym');
 });
@@ -733,9 +877,29 @@ app.get('/gym/team/:id', requireLogin, requireCanManageTeam, (req, res) => {
   const isCaptain = team.captain_user_id === req.session.user.id;
   const pendingRequest = db.prepare("SELECT * FROM gym_attachment_requests WHERE team_id=? AND status='pending' ORDER BY id DESC LIMIT 1").get(team.id);
   const roster = db.prepare(`
-    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, u.phone, a.category
+    SELECT a.id as athlete_id, u.id as user_id, u.first_name, u.last_name, u.gender, u.email, u.phone, u.status, a.category
     FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=?`).all(team.id);
-  res.render('gym-team-detail', { title: team.name, team, roster, gym, isCaptain, pendingRequest, resetPasswordFor: null, newPassword: null, welcome: req.query.welcome });
+  res.render('gym-team-detail', {
+    title: team.name, team, roster, gym, hasRealGym: isRealGym(gym), isCaptain, pendingRequest,
+    resetPasswordFor: null, newPassword: null, welcome: req.query.welcome,
+  });
+});
+
+// Approve a pending athlete onto this roster (captain or gym admin) — the
+// "someone attached to a team gets approved by the gym/captain" leg of the
+// signup-approval requirement. Suspend is the same control in reverse, e.g.
+// for a no-show or a account under review, without deleting their history.
+app.post('/gym/team/:id/roster/:athleteId/approve', requireLogin, requireCanManageTeam, (req, res) => {
+  const team = req.managedTeam;
+  const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND team_id=?").get(req.params.athleteId, team.id);
+  if (athlete) db.prepare("UPDATE users SET status='active' WHERE id=?").run(athlete.user_id);
+  res.redirect('/gym/team/' + team.id);
+});
+app.post('/gym/team/:id/roster/:athleteId/suspend', requireLogin, requireCanManageTeam, (req, res) => {
+  const team = req.managedTeam;
+  const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND team_id=?").get(req.params.athleteId, team.id);
+  if (athlete) db.prepare("UPDATE users SET status='suspended' WHERE id=?").run(athlete.user_id);
+  res.redirect('/gym/team/' + team.id);
 });
 
 app.post('/gym/team/:id/edit', requireLogin, requireCanManageTeam, (req, res) => {
@@ -834,48 +998,63 @@ app.post('/gym/team/:id/update-members', requireLogin, requireCanManageTeam, (re
   res.redirect(`/gym/team/${team.id}?saved=1&savedCount=${savedCount}`);
 });
 
-// Gym admin directly creates a new member on their team — for people who
-// haven't signed up themselves yet. A default password is set; the gym
-// should let the athlete know it so they can log in (no email/reset
-// infrastructure is wired up yet — see README).
-app.post('/gym/team/:id/add-member', requireLogin, requireCanManageTeam, (req, res) => {
+// Gym admin (or captain) directly creates one or more new members on their
+// team in a single submit — for people who haven't signed up themselves
+// yet. A default password is set for each; the gym should let the athlete
+// know it so they can log in (no email/reset infrastructure is wired up
+// yet — see README). A bad row is skipped (with its error reported) rather
+// than discarding everyone else's valid entries in the same submission,
+// same pattern as the roster batch-edit route.
+app.post('/gym/team/:id/add-members', requireLogin, requireCanManageTeam, (req, res) => {
   const team = req.managedTeam;
   const gym = team.gym_id ? db.prepare("SELECT * FROM gyms WHERE id=?").get(team.gym_id) : null;
-
-  const { first_name, last_name, email, phone, gender, category } = req.body;
   const validCategories = ['mens_singles', 'womens_singles', 'mens_doubles', 'womens_doubles', 'mixed_doubles', ''];
-
-  if (!isReasonableLength(first_name, 80) || !isOptionalReasonableLength(last_name, 80)) {
-    return res.redirect('/gym/team/' + req.params.id + '?error=name');
-  }
-  if (!isValidEmail(email)) {
-    return res.redirect('/gym/team/' + req.params.id + '?error=email');
-  }
-  if (db.prepare("SELECT id FROM users WHERE email=?").get(email.trim().toLowerCase())) {
-    return res.redirect('/gym/team/' + req.params.id + '?error=emailtaken');
-  }
-  if (gender !== 'M' && gender !== 'F') {
-    return res.redirect('/gym/team/' + req.params.id + '?error=gender');
-  }
-  if (!validCategories.includes(category)) {
-    return res.redirect('/gym/team/' + req.params.id + '?error=category');
-  }
+  const raw = req.body.newmembers || {};
+  const rows = Array.isArray(raw) ? raw : Object.values(raw);
 
   const DEFAULT_PASSWORD = 'GLGWelcome2026!';
-  const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
-  const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,gender,phone) VALUES (?,?,?,?,?,?,?)")
-    .run(email.trim().toLowerCase(), hash, 'athlete', first_name.trim(), last_name.trim(), gender, (phone || '').trim() || null).lastInsertRowid;
-  db.prepare("INSERT INTO athletes (user_id, region_id, team_id, wants_team, category) VALUES (?,?,?,0,?)")
-    .run(uid, team.region_id, team.id, category || null);
+  const errors = [];
+  let addedCount = 0;
 
-  mailer.send(mailer.addedByGymEmail({
-    user: { first_name: first_name.trim(), email: email.trim().toLowerCase() },
-    gymName: gym ? gym.name : `${team.name} (a captain-run team)`,
-    teamName: team.name,
-    tempPassword: DEFAULT_PASSWORD,
-  }));
+  for (const m of rows) {
+    if (!m) continue;
+    const first_name = (m.first_name || '').trim();
+    const last_name = (m.last_name || '').trim();
+    const email = (m.email || '').trim().toLowerCase();
+    const phone = (m.phone || '').trim();
+    const gender = m.gender;
+    const category = m.category || '';
+    const label = first_name || email || 'a new member';
 
-  res.redirect('/gym/team/' + req.params.id + '?added=1');
+    // An entirely blank row (from an unused "+" slot left in the form) is
+    // silently skipped rather than reported as an error.
+    if (!first_name && !email) continue;
+
+    if (!isReasonableLength(first_name, 80) || !isOptionalReasonableLength(last_name, 80)) { errors.push(`${label}: invalid name`); continue; }
+    if (!isValidEmail(email)) { errors.push(`${label}: invalid email`); continue; }
+    if (db.prepare("SELECT id FROM users WHERE email=?").get(email)) { errors.push(`${label}: email already in use`); continue; }
+    if (gender !== 'M' && gender !== 'F') { errors.push(`${label}: invalid gender`); continue; }
+    if (!validCategories.includes(category)) { errors.push(`${label}: invalid category`); continue; }
+
+    const hash = bcrypt.hashSync(DEFAULT_PASSWORD, 10);
+    const uid = db.prepare("INSERT INTO users (email,password_hash,role,first_name,last_name,gender,phone) VALUES (?,?,?,?,?,?,?)")
+      .run(email, hash, 'athlete', first_name, last_name, gender, phone || null).lastInsertRowid;
+    db.prepare("INSERT INTO athletes (user_id, region_id, team_id, wants_team, category) VALUES (?,?,?,0,?)")
+      .run(uid, team.region_id, team.id, category || null);
+
+    mailer.send(mailer.addedByGymEmail({
+      user: { first_name, email },
+      gymName: gym ? gym.name : `${team.name} (a captain-run team)`,
+      teamName: team.name,
+      tempPassword: DEFAULT_PASSWORD,
+    }));
+    addedCount++;
+  }
+
+  if (errors.length) {
+    return res.redirect(`/gym/team/${team.id}?addedCount=${addedCount}&addErrors=${encodeURIComponent(errors.join('; '))}`);
+  }
+  res.redirect(`/gym/team/${req.params.id}?added=1&addedCount=${addedCount}`);
 });
 
 // Gym admin resets a member's password (e.g. they've forgotten it and there's
@@ -902,10 +1081,10 @@ app.post('/gym/team/:id/reset-password', requireLogin, requireCanManageTeam, (re
   // Re-render directly (not a redirect) so the new password can be shown once,
   // in the response — never put a raw password in a URL/query string.
   const roster = db.prepare(`
-    SELECT a.id as athlete_id, u.first_name, u.last_name, u.gender, u.email, u.phone, a.category
+    SELECT a.id as athlete_id, u.id as user_id, u.first_name, u.last_name, u.gender, u.email, u.phone, u.status, a.category
     FROM athletes a JOIN users u ON u.id=a.user_id WHERE a.team_id=?`).all(team.id);
   res.render('gym-team-detail', {
-    title: team.name, team, roster, gym,
+    title: team.name, team, roster, gym, hasRealGym: isRealGym(gym),
     isCaptain: team.captain_user_id === req.session.user.id,
     pendingRequest: db.prepare("SELECT * FROM gym_attachment_requests WHERE team_id=? AND status='pending' ORDER BY id DESC LIMIT 1").get(team.id),
     resetPasswordFor: athlete.id, newPassword, welcome: null,
@@ -1466,26 +1645,43 @@ app.get('/api/fixture/:id/live-scores', (req, res) => {
 // ============ ADMIN ============
 
 app.get('/admin', requireLogin, requireRole('admin'), (req, res) => {
+  // Each tile also gets a status breakdown so the tile itself hints at what's
+  // waiting on you before you even click through to the full list.
+  const breakdown = (table, col = 'status') => {
+    const rows = db.prepare(`SELECT ${col} as k, COUNT(*) c FROM ${table} GROUP BY ${col}`).all();
+    const out = {};
+    rows.forEach(r => out[r.k || 'active'] = r.c);
+    return out;
+  };
   const stats = {
     users: db.prepare("SELECT COUNT(*) c FROM users").get().c,
-    gyms: db.prepare("SELECT COUNT(*) c FROM gyms").get().c,
+    gyms: db.prepare("SELECT COUNT(*) c FROM gyms WHERE is_unassigned=0").get().c,
     teams: db.prepare("SELECT COUNT(*) c FROM teams").get().c,
     athletes: db.prepare("SELECT COUNT(*) c FROM athletes").get().c,
     fixtures: db.prepare("SELECT COUNT(*) c FROM fixtures").get().c,
   };
+  const statusBreakdown = {
+    users: breakdown('users'),
+    gyms: db.prepare("SELECT status as k, COUNT(*) c FROM gyms WHERE is_unassigned=0 GROUP BY status").all()
+      .reduce((o, r) => (o[r.k || 'active'] = r.c, o), {}),
+  };
   const pendingOperators = db.prepare("SELECT * FROM users WHERE role='league_operator' AND approved=0").all();
-  const regions = db.prepare("SELECT * FROM regions ORDER BY level, name").all();
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region' ORDER BY name").all();
+  const allRegions = db.prepare("SELECT * FROM regions ORDER BY level, name").all();
 
   // An in-app safety net alongside the admin notification emails — so a new
   // signup is still visible here even if ADMIN_NOTIFY_EMAIL isn't set yet,
-  // or an email happens to get lost. Last 10 of each, newest first.
+  // or an email happens to get lost. Last 10 of each, newest first. Each row
+  // links through to a review page — click in, see the full detail, approve
+  // or reject right there.
   const recentGyms = db.prepare(`
-    SELECT g.name, g.created_at, u.first_name, u.last_name, u.email, r.name as region_name
+    SELECT g.id, g.name, g.status, g.created_at, u.first_name, u.last_name, u.email, r.name as region_name
     FROM gyms g JOIN users u ON u.id=g.admin_user_id LEFT JOIN regions r ON r.id=g.region_id
+    WHERE g.is_unassigned=0
     ORDER BY g.created_at DESC LIMIT 10
   `).all();
   const recentAthletes = db.prepare(`
-    SELECT u.first_name, u.last_name, u.email, u.created_at, r.name as region_name, t.name as team_name
+    SELECT a.id as athlete_id, u.id as user_id, u.first_name, u.last_name, u.email, u.status, u.created_at, r.name as region_name, t.name as team_name
     FROM athletes a JOIN users u ON u.id=a.user_id LEFT JOIN regions r ON r.id=a.region_id LEFT JOIN teams t ON t.id=a.team_id
     ORDER BY u.created_at DESC LIMIT 10
   `).all();
@@ -1496,18 +1692,237 @@ app.get('/admin', requireLogin, requireRole('admin'), (req, res) => {
   const orphanedTeams = db.prepare(`
     SELECT t.id, t.name, t.created_at, r.name as region_name,
            u.first_name as captain_first_name, u.last_name as captain_last_name, u.email as captain_email
-    FROM teams t LEFT JOIN regions r ON r.id=t.region_id LEFT JOIN users u ON u.id=t.captain_user_id
-    WHERE t.gym_id IS NULL ORDER BY t.created_at
+    FROM teams t
+    LEFT JOIN regions r ON r.id=t.region_id
+    LEFT JOIN users u ON u.id=t.captain_user_id
+    LEFT JOIN gyms g ON g.id=t.gym_id
+    WHERE t.gym_id IS NULL OR g.is_unassigned=1
+    ORDER BY t.created_at
   `).all();
 
   res.render('admin-dashboard', {
-    title: 'GLG Admin', stats, pendingOperators, regions, storage: db.storageInfo(),
+    title: 'GLG Admin', stats, statusBreakdown, pendingOperators, regions: allRegions, regionOptions: regions, storage: db.storageInfo(),
+    recordingStorage: storage.storageDiagnostics(),
     recentGyms, recentAthletes, orphanedTeams, adminNotifyConfigured: !!process.env.ADMIN_NOTIFY_EMAIL,
   });
 });
 
+// ============================================================================
+// ADMIN CONTROL PANEL — global CRUD over users, gyms, teams, athletes.
+// "Admin can do anything a franchisee, gym, captain, or user can do" — these
+// routes are the global (admin) tier of the shared canManageUser() hierarchy
+// defined near the top of this file. requireRole('admin') keeps this tier
+// admin-only for now; league_operator/gym_admin get the scoped equivalents
+// on their own dashboards (see /league and /gym below).
+// ============================================================================
+
+app.get('/admin/users', requireLogin, requireRole('admin'), (req, res) => {
+  const { role, status } = req.query;
+  let sql = `SELECT u.*, g.name as owns_gym_name, tc.name as captain_of_team
+             FROM users u
+             LEFT JOIN gyms g ON g.admin_user_id = u.id
+             LEFT JOIN teams tc ON tc.captain_user_id = u.id
+             WHERE 1=1`;
+  const params = [];
+  if (role) { sql += ' AND u.role=?'; params.push(role); }
+  if (status) { sql += ' AND u.status=?'; params.push(status); }
+  sql += ' ORDER BY u.created_at DESC';
+  const users = db.prepare(sql).all(...params);
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region' ORDER BY name").all();
+  res.render('admin-users', { title: 'All Users', users, regions, roleFilter: role || '', statusFilter: status || '', error: req.query.error || null });
+});
+
+app.post('/admin/users/new', requireLogin, requireRole('admin'), (req, res) => {
+  const { email, password, role, first_name, last_name, region_id } = req.body;
+  const validRoles = ['athlete', 'gym_admin', 'league_operator', 'judge', 'admin'];
+  if (!isValidEmail(email) || !isValidPassword(password) || !validRoles.includes(role) || !isReasonableLength(first_name, 80)) {
+    return res.redirect('/admin/users?error=' + encodeURIComponent('Please fill in a valid email, password (6+ chars), name and role.'));
+  }
+  if (db.prepare("SELECT id FROM users WHERE email=?").get(email.trim().toLowerCase())) {
+    return res.redirect('/admin/users?error=' + encodeURIComponent('An account with that email already exists.'));
+  }
+  const hash = bcrypt.hashSync(password, 10);
+  // Admin-created accounts start active — admin creating them IS the approval.
+  const uid = db.prepare(`INSERT INTO users (email,password_hash,role,first_name,last_name,region_id,status) VALUES (?,?,?,?,?,?,'active')`)
+    .run(email.trim().toLowerCase(), hash, role, first_name.trim().slice(0,80), (last_name||'').trim().slice(0,80), role === 'league_operator' ? (region_id || null) : null).lastInsertRowid;
+  if (role === 'athlete') {
+    const regionValid = region_id && db.prepare("SELECT id FROM regions WHERE id=?").get(region_id);
+    db.prepare("INSERT INTO athletes (user_id, region_id, wants_team) VALUES (?,?,1)").run(uid, regionValid ? region_id : null);
+  }
+  res.redirect('/admin/users');
+});
+
+app.post('/admin/users/:id/status', requireLogin, requireRole('admin'), (req, res) => {
+  const status = req.body.status;
+  if (!['pending', 'active', 'suspended'].includes(status)) return res.redirect('/admin/users');
+  db.prepare("UPDATE users SET status=? WHERE id=?").run(status, req.params.id);
+  res.redirect(req.get('Referrer') || '/admin/users');
+});
+
+// Deleting a person can leave dangling references (they run a gym, captain a
+// team, judge a fixture, etc.) — rather than cascading destructively, detach
+// the roles they held (gym/team keep existing, just ownerless) and remove
+// the account itself. Scoring history (category_results etc.) is untouched.
+app.post('/admin/users/:id/delete', requireLogin, requireRole('admin'), (req, res) => {
+  const id = req.params.id;
+  db.prepare("UPDATE gyms SET admin_user_id=NULL WHERE admin_user_id=?").run(id);
+  db.prepare("UPDATE teams SET captain_user_id=NULL WHERE captain_user_id=?").run(id);
+  db.prepare("DELETE FROM athletes WHERE user_id=?").run(id);
+  try {
+    db.prepare("DELETE FROM users WHERE id=?").run(id);
+  } catch (e) {
+    return res.redirect('/admin/users?error=' + encodeURIComponent('Could not delete — this account is still referenced elsewhere (e.g. judge assignments or recordings).'));
+  }
+  res.redirect('/admin/users');
+});
+
+// Promote an athlete to captain of a brand-new (Unassigned-gym) team — the
+// "make an athlete a captain" control. If they're already on a team's roster,
+// they're moved onto the new team they'll now captain.
+app.post('/admin/users/:id/make-captain', requireLogin, requireRole('admin'), (req, res) => {
+  const user = db.prepare("SELECT * FROM users WHERE id=? AND role='athlete'").get(req.params.id);
+  if (!user) return res.redirect('/admin/users?error=' + encodeURIComponent('Only an athlete can be made a captain.'));
+  const athlete = db.prepare("SELECT * FROM athletes WHERE user_id=?").get(user.id);
+  const regionId = (athlete && athlete.region_id) || req.body.region_id;
+  if (!regionId) return res.redirect('/admin/users?error=' + encodeURIComponent('This athlete has no region on file — set one first.'));
+  const teamName = (req.body.team_name || `${user.first_name}'s Team`).trim().slice(0, 80);
+  const dupe = db.prepare("SELECT id FROM teams WHERE region_id=? AND name = ? COLLATE NOCASE").get(regionId, teamName);
+  if (dupe) return res.redirect('/admin/users?error=' + encodeURIComponent('A team with that name already exists in this region.'));
+  const unassignedGym = getUnassignedGym(regionId);
+  const teamId = db.prepare("INSERT INTO teams (name, gym_id, region_id, division, captain_user_id) VALUES (?,?,?,?,?)")
+    .run(teamName, unassignedGym.id, regionId, 'Open', user.id).lastInsertRowid;
+  if (athlete) {
+    db.prepare("UPDATE athletes SET team_id=?, wants_team=0 WHERE id=?").run(teamId, athlete.id);
+  } else {
+    db.prepare("INSERT INTO athletes (user_id, region_id, team_id, wants_team) VALUES (?,?,?,0)").run(user.id, regionId, teamId);
+  }
+  res.redirect('/admin/users');
+});
+
+app.get('/admin/gyms', requireLogin, requireRole('admin'), (req, res) => {
+  const gyms = db.prepare(`
+    SELECT g.*, u.first_name, u.last_name, u.email, r.name as region_name,
+           (SELECT COUNT(*) FROM teams t WHERE t.gym_id=g.id) as team_count
+    FROM gyms g LEFT JOIN users u ON u.id=g.admin_user_id LEFT JOIN regions r ON r.id=g.region_id
+    WHERE g.is_unassigned=0 ORDER BY g.created_at DESC
+  `).all();
+  const regions = db.prepare("SELECT * FROM regions WHERE level='region' ORDER BY name").all();
+  res.render('admin-gyms', { title: 'All Gyms', gyms, regions, error: req.query.error || null });
+});
+
+app.post('/admin/gyms/new', requireLogin, requireRole('admin'), (req, res) => {
+  const { name, region_id, address } = req.body;
+  if (!isReasonableLength(name, 120) || !db.prepare("SELECT id FROM regions WHERE id=?").get(region_id)) {
+    return res.redirect('/admin/gyms?error=' + encodeURIComponent('Please enter a gym name and choose a valid region.'));
+  }
+  db.prepare("INSERT INTO gyms (name, region_id, admin_user_id, address, status) VALUES (?,?,NULL,?,'active')")
+    .run(name.trim().slice(0,120), region_id, (address||'').trim().slice(0,200) || null);
+  res.redirect('/admin/gyms');
+});
+
+app.post('/admin/gyms/:id/status', requireLogin, requireRole('admin'), (req, res) => {
+  const status = req.body.status;
+  if (!['pending', 'active', 'suspended'].includes(status)) return res.redirect('/admin/gyms');
+  const gym = db.prepare("SELECT * FROM gyms WHERE id=? AND is_unassigned=0").get(req.params.id);
+  if (!gym) return res.redirect('/admin/gyms');
+  db.prepare("UPDATE gyms SET status=? WHERE id=?").run(status, gym.id);
+  // Approving a gym also activates its admin's own account, if that account
+  // was still sitting pending on the same signup.
+  if (status === 'active' && gym.admin_user_id) {
+    db.prepare("UPDATE users SET status='active' WHERE id=? AND status='pending'").run(gym.admin_user_id);
+  }
+  res.redirect(req.get('Referrer') || '/admin/gyms');
+});
+
+app.post('/admin/gyms/:id/delete', requireLogin, requireRole('admin'), (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE id=? AND is_unassigned=0").get(req.params.id);
+  if (!gym) return res.redirect('/admin/gyms');
+  const teamCount = db.prepare("SELECT COUNT(*) c FROM teams WHERE gym_id=?").get(gym.id).c;
+  if (teamCount > 0) {
+    return res.redirect('/admin/gyms?error=' + encodeURIComponent(`Can't delete ${gym.name} — it still has ${teamCount} team(s). Move or remove them first.`));
+  }
+  db.prepare("DELETE FROM gyms WHERE id=?").run(gym.id);
+  res.redirect('/admin/gyms');
+});
+
+app.get('/admin/teams', requireLogin, requireRole('admin'), (req, res) => {
+  const teams = db.prepare(`
+    SELECT t.*, g.name as gym_name, g.is_unassigned as gym_is_unassigned, r.name as region_name,
+           u.first_name as captain_first_name, u.last_name as captain_last_name,
+           (SELECT COUNT(*) FROM athletes a WHERE a.team_id=t.id) as roster_count
+    FROM teams t
+    LEFT JOIN gyms g ON g.id=t.gym_id
+    LEFT JOIN regions r ON r.id=t.region_id
+    LEFT JOIN users u ON u.id=t.captain_user_id
+    ORDER BY t.created_at DESC
+  `).all();
+  res.render('admin-teams', { title: 'All Teams', teams });
+});
+
+app.get('/admin/athletes', requireLogin, requireRole('admin'), (req, res) => {
+  const athletes = db.prepare(`
+    SELECT a.id as athlete_id, u.id as user_id, u.first_name, u.last_name, u.email, u.status, u.created_at,
+           a.region_id, r.name as region_name, t.id as team_id, t.name as team_name, a.category
+    FROM athletes a
+    JOIN users u ON u.id=a.user_id
+    LEFT JOIN regions r ON r.id=a.region_id
+    LEFT JOIN teams t ON t.id=a.team_id
+    ORDER BY u.created_at DESC
+  `).all();
+  const teamsByRegion = {};
+  db.prepare("SELECT t.id, t.name, t.region_id FROM teams t").all().forEach(t => {
+    (teamsByRegion[t.region_id] ||= []).push(t);
+  });
+  res.render('admin-athletes', { title: 'All Athletes', athletes, teamsByRegion });
+});
+
+app.post('/admin/athletes/:id/assign-team', requireLogin, requireRole('admin'), (req, res) => {
+  const athlete = db.prepare("SELECT * FROM athletes WHERE id=?").get(req.params.id);
+  if (!athlete) return res.redirect('/admin/athletes');
+  const teamId = req.body.team_id || null;
+  const team = teamId ? db.prepare("SELECT * FROM teams WHERE id=?").get(teamId) : null;
+  db.prepare("UPDATE athletes SET team_id=?, wants_team=? WHERE id=?").run(team ? team.id : null, team ? 0 : 1, athlete.id);
+  // Fitting someone into a team is the "action required" that clears an
+  // unattached pending athlete — approve them in the same step.
+  if (team) db.prepare("UPDATE users SET status='active' WHERE id=? AND status='pending'").run(athlete.user_id);
+  res.redirect('/admin/athletes');
+});
+
+app.post('/admin/athletes/:id/status', requireLogin, requireRole('admin'), (req, res) => {
+  const status = req.body.status;
+  if (!['pending', 'active', 'suspended'].includes(status)) return res.redirect('/admin/athletes');
+  const athlete = db.prepare("SELECT * FROM athletes WHERE id=?").get(req.params.id);
+  if (athlete) db.prepare("UPDATE users SET status=? WHERE id=?").run(status, athlete.user_id);
+  res.redirect(req.get('Referrer') || '/admin/athletes');
+});
+
+// ---- Notification click-through: review a single gym or athlete signup ----
+app.get('/admin/notifications/gym/:id', requireLogin, requireRole('admin'), (req, res) => {
+  const gym = db.prepare(`
+    SELECT g.*, u.first_name, u.last_name, u.email, u.phone, u.status as admin_status, r.name as region_name
+    FROM gyms g LEFT JOIN users u ON u.id=g.admin_user_id LEFT JOIN regions r ON r.id=g.region_id
+    WHERE g.id=?
+  `).get(req.params.id);
+  if (!gym) return res.status(404).render('error', { title: 'Not Found', message: 'Gym not found.' });
+  const teams = db.prepare("SELECT * FROM teams WHERE gym_id=?").all(gym.id);
+  res.render('admin-notification-gym', { title: gym.name, gym, teams });
+});
+
+app.get('/admin/notifications/athlete/:id', requireLogin, requireRole('admin'), (req, res) => {
+  const athlete = db.prepare(`
+    SELECT a.*, u.first_name, u.last_name, u.email, u.phone, u.status as user_status, r.name as region_name
+    FROM athletes a JOIN users u ON u.id=a.user_id LEFT JOIN regions r ON r.id=a.region_id
+    WHERE a.id=?
+  `).get(req.params.id);
+  if (!athlete) return res.status(404).render('error', { title: 'Not Found', message: 'Athlete not found.' });
+  const team = athlete.team_id ? db.prepare("SELECT t.*, g.name as gym_name, g.is_unassigned FROM teams t LEFT JOIN gyms g ON g.id=t.gym_id WHERE t.id=?").get(athlete.team_id) : null;
+  const availableTeams = db.prepare("SELECT * FROM teams WHERE region_id=? ORDER BY name").all(athlete.region_id);
+  res.render('admin-notification-athlete', { title: `${athlete.first_name} ${athlete.last_name}`, athlete, team, availableTeams });
+});
+
 app.post('/admin/operators/:id/approve', requireLogin, requireRole('admin'), (req, res) => {
-  db.prepare("UPDATE users SET approved=1 WHERE id=?").run(req.params.id);
+  const regionId = req.body.region_id || null;
+  db.prepare("UPDATE users SET approved=1, status='active', region_id=? WHERE id=?").run(regionId, req.params.id);
   res.redirect('/admin');
 });
 
@@ -1689,8 +2104,58 @@ app.post('/admin/region/:id/fixtures/:fixtureId/delete', requireLogin, requireRo
 });
 
 // ============ LEAGUE OPERATOR DASHBOARD (placeholder home once approved) ============
-app.get('/league', requireLogin, requireRole('league_operator'), (req, res) => {
-  res.render('league-dashboard', { title: 'League Operator' });
+// A franchisee's reach is scoped to the one region assigned to them at
+// approval time (see /admin/operators/:id/approve). "A franchisee can do
+// anything gyms/athletes/captains within its franchise can do" — this
+// dashboard is that scoped tier: same suspend/approve/assign actions as
+// admin, filtered down to their region via the shared /admin/* routes plus
+// a region_id ownership check on each one below.
+function requireOwnRegion(req, res, next) {
+  if (!req.session.user.region_id) {
+    return res.status(403).render('error', { title: 'No Region Assigned', message: "GLG HQ hasn't assigned you a region yet — reach out to get set up." });
+  }
+  next();
+}
+app.get('/league', requireLogin, requireRole('league_operator'), requireOwnRegion, (req, res) => {
+  const regionId = req.session.user.region_id;
+  const region = db.prepare("SELECT * FROM regions WHERE id=?").get(regionId);
+  const gyms = db.prepare(`
+    SELECT g.*, u.first_name, u.last_name, u.email,
+           (SELECT COUNT(*) FROM teams t WHERE t.gym_id=g.id) as team_count
+    FROM gyms g LEFT JOIN users u ON u.id=g.admin_user_id
+    WHERE g.region_id=? AND g.is_unassigned=0 ORDER BY g.created_at DESC
+  `).all(regionId);
+  const teams = db.prepare(`
+    SELECT t.*, g.name as gym_name,
+           (SELECT COUNT(*) FROM athletes a WHERE a.team_id=t.id) as roster_count
+    FROM teams t LEFT JOIN gyms g ON g.id=t.gym_id WHERE t.region_id=? ORDER BY t.name
+  `).all(regionId);
+  const athletes = db.prepare(`
+    SELECT a.id as athlete_id, u.first_name, u.last_name, u.email, u.status, t.name as team_name
+    FROM athletes a JOIN users u ON u.id=a.user_id LEFT JOIN teams t ON t.id=a.team_id
+    WHERE a.region_id=? ORDER BY u.created_at DESC
+  `).all(regionId);
+  res.render('league-dashboard', { title: 'League Operator', region, gyms, teams, athletes });
+});
+
+// Scoped mirror of the admin gym/athlete status actions — a franchisee can
+// only touch a gym or athlete that actually belongs to their own region.
+app.post('/league/gyms/:id/status', requireLogin, requireRole('league_operator'), requireOwnRegion, (req, res) => {
+  const gym = db.prepare("SELECT * FROM gyms WHERE id=? AND region_id=? AND is_unassigned=0").get(req.params.id, req.session.user.region_id);
+  const status = req.body.status;
+  if (gym && ['pending', 'active', 'suspended'].includes(status)) {
+    db.prepare("UPDATE gyms SET status=? WHERE id=?").run(status, gym.id);
+    if (status === 'active' && gym.admin_user_id) db.prepare("UPDATE users SET status='active' WHERE id=? AND status='pending'").run(gym.admin_user_id);
+  }
+  res.redirect('/league');
+});
+app.post('/league/athletes/:id/status', requireLogin, requireRole('league_operator'), requireOwnRegion, (req, res) => {
+  const athlete = db.prepare("SELECT * FROM athletes WHERE id=? AND region_id=?").get(req.params.id, req.session.user.region_id);
+  const status = req.body.status;
+  if (athlete && ['pending', 'active', 'suspended'].includes(status)) {
+    db.prepare("UPDATE users SET status=? WHERE id=?").run(status, athlete.user_id);
+  }
+  res.redirect('/league');
 });
 
 // ============ WEDGETAIL RECORDINGS ============

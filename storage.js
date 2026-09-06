@@ -28,6 +28,21 @@ function storageEnabled() {
   return !!getClient() && !!process.env.R2_BUCKET;
 }
 
+// Var-by-var diagnostic for the admin dashboard — storageEnabled() above only
+// gives a yes/no, which made a single missing/mistyped variable
+// indistinguishable from nothing being configured at all. This names exactly
+// which of the 4 is missing, so "why aren't clips saving" doesn't turn into a
+// guessing game against the Railway variables tab.
+function storageDiagnostics() {
+  const vars = [
+    { key: 'R2_ACCOUNT_ID', set: !!process.env.R2_ACCOUNT_ID },
+    { key: 'R2_ACCESS_KEY_ID', set: !!process.env.R2_ACCESS_KEY_ID },
+    { key: 'R2_SECRET_ACCESS_KEY', set: !!process.env.R2_SECRET_ACCESS_KEY },
+    { key: 'R2_BUCKET', set: !!process.env.R2_BUCKET, value: process.env.R2_BUCKET || null },
+  ];
+  return { enabled: storageEnabled(), vars };
+}
+
 async function uploadRecording({ key, buffer, contentType }) {
   const client = getClient();
   if (!client) throw new Error('Video storage is not configured (R2 env vars missing).');
@@ -94,4 +109,4 @@ async function cleanupExpiredRecordings(db) {
   return { checked: true, deleted, days };
 }
 
-module.exports = { storageEnabled, uploadRecording, getPlaybackUrl, deleteRecording, cleanupExpiredRecordings, retentionDays };
+module.exports = { storageEnabled, storageDiagnostics, uploadRecording, getPlaybackUrl, deleteRecording, cleanupExpiredRecordings, retentionDays };

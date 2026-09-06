@@ -314,9 +314,9 @@ ${site}`;
   return { to: user.email, subject: approved ? `${gymName} approved your team's request` : `Update on your team's request to join ${gymName}`, text, html: toHtml(text) };
 }
 
-function gymJudgesCreatedEmail({ user, gymName, judges, tempPassword }) {
+function gymJudgesCreatedEmail({ user, gymName, judges }) {
   const site = process.env.PUBLIC_BASE_URL || 'https://gymleagueglobal.com.au';
-  const judgeLines = judges.map(j => `  - ${j.label}: ${j.email}`).join('\n');
+  const judgeLines = judges.map(j => `  - ${j.label}: ${j.email}${j.password ? ` — password: ${j.password}` : ''}`).join('\n');
   const text = `Hi ${user.first_name || 'there'},
 
 ${gymName}'s 5 category-judge logins are ready — one per competing category.
@@ -325,12 +325,10 @@ so there's nothing extra to check.
 
 ${judgeLines}
 
-Shared temporary password for all 5: ${tempPassword}
-
-Hand the relevant login to whoever's judging each category on the day, or
-just log into each yourself from ${site}/login to enter results as that
-category comes up. We'd recommend changing the password from My Account
-once you're in.
+Each password expires 24 hours after it's generated — these addresses are
+placeholders nobody actually reads, so hand the login and password to
+whoever's judging that category in person on the day. Need a fresh set later?
+Use "Generate Passwords" on your dashboard any time.
 
 Gym League Global
 ${site}`;
