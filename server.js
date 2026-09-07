@@ -2191,7 +2191,12 @@ app.post('/api/wedgetail/recordings', recordingLimiter, recordingUpload.single('
   }
 
   const { exercise_name, mode, lane_a_label, lane_b_label, duration_sec, fixture_id } = req.body;
-  if (!isReasonableLength(exercise_name, 120) || (mode !== 'angle' && mode !== 'floor')) {
+  // Recording was originally wired up for just the first two exercise modes;
+  // the counting logic elsewhere in wedgetail.html has since grown to cover
+  // several more (lunge, rack, twist, burpee, wallball), so the allow-list
+  // here needs to match or every other mode's clips get silently rejected.
+  const VALID_MODES = ['angle', 'floor', 'lunge', 'rack', 'twist', 'burpee', 'wallball'];
+  if (!isReasonableLength(exercise_name, 120) || !VALID_MODES.includes(mode)) {
     return res.status(400).json({ error: 'Missing or invalid exercise_name/mode.' });
   }
 
