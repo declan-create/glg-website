@@ -749,6 +749,24 @@ class Lane {
 }
 
 let detector, video, running = false, cameraStream = null;
+
+// Recording composite: laneA.canvas and laneB.canvas already have each
+// frame's cropped video PLUS the green-line/white-dot skeleton overlay
+// drawn onto them (see drawSkeleton) for the on-screen display. The
+// recorder previously captured the raw camera feed instead, which is why
+// saved clips never had the tracking overlay coaches see live. This canvas
+// mirrors both lane canvases side by side, unmodified, so captureStream()
+// on it records exactly what's on screen — same colors, same dots, same
+// lines, nothing about drawSkeleton() needed to change.
+const recCanvas = document.createElement('canvas');
+const recCtx = recCanvas.getContext('2d');
+function updateRecCanvas(){
+  if (!laneA.canvas || !laneB.canvas) return;
+  const w = laneA.canvas.width, h = laneA.canvas.height;
+  if (recCanvas.width !== w*2 || recCanvas.height !== h){ recCanvas.width = w*2; recCanvas.height = h; }
+  recCtx.drawImage(laneA.canvas, 0, 0);
+  recCtx.drawImage(laneB.canvas, w, 0);
+}
 const laneA = new Lane(document.querySelector('[data-lane=A]'));
 const laneB = new Lane(document.querySelector('[data-lane=B]'));
 laneA.crop = 'left'; laneB.crop = 'right';
@@ -834,7 +852,7 @@ exerciseSelectEl.addEventListener('change', () => {
   if (opt) document.getElementById('exerciseName').value = opt.textContent.replace(/^Gate \d+: /, '');
 });
 
-// ---- Recording: raw camera feed, from GO to Reset, uploaded for coach review ----
+// ---- Recording: both lanes' annotated (skeleton-overlay) views, from GO to Reset, uploaded for coach review ----
 let mediaRecorder = null, recordedChunks = [], recStartPerf = null;
 const recStatusEl = document.getElementById('recStatus');
 
@@ -852,7 +870,10 @@ function startRecording(){
   try {
     recordedChunks = [];
     const mimeType = pickMimeType();
-    mediaRecorder = new MediaRecorder(cameraStream, mimeType ? { mimeType } : undefined);
+    // Record the composite canvas (both lanes' annotated views, overlay and
+    // all) rather than the raw cameraStream — see recCanvas above for why.
+    const recStream = recCanvas.captureStream(30);
+    mediaRecorder = new MediaRecorder(recStream, mimeType ? { mimeType } : undefined);
     mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
     mediaRecorder.start(1000); // gather in 1s chunks so a crash mid-set doesn't lose the whole clip
     recStartPerf = performance.now();
@@ -907,7 +928,11 @@ async function stopAndUploadRecording(){
       recStatusEl.textContent = `saved ✓ (${data.flagCount} flagged)`;
       recStatusEl.style.color = 'var(--lime)';
     } else {
-      recStatusEl.textContent = 'clip not saved (storage not set up)';
+      // Show whatever the server actually said (storage not configured,
+      // invalid mode, etc.) instead of always blaming storage — a generic
+      // message here previously made an unrelated rejection (e.g. a mode
+      // recording wasn't wired up for) look like an R2 config problem.
+      recStatusEl.textContent = `clip not saved (${data.reason || data.error || 'unknown error'})`;
       recStatusEl.style.color = 'var(--slate)';
     }
   } catch (e) {
@@ -1043,6 +1068,7 @@ async function loop(){
     // silently killing the requestAnimationFrame chain for good.
     await laneA.detect(detector, video);
     await laneB.detect(detector, video);
+    updateRecCanvas(); // keep the recording composite in sync every frame, whether or not a recording is currently running
     consecutiveErrors = 0;
   } catch (e) {
     // Any single bad frame — WebGL hiccup, camera glitch, anything — now
