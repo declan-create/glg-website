@@ -266,6 +266,19 @@ function angleAt(a,b,c){
 // the rack) from counting automatically.
 const OVERHEAD_MARGIN_PX = 15;   // wrist must clear the shoulder by at least this many px
 const OVERHEAD_ELBOW_MIN = 150;  // degrees — how straight the arm needs to be to call it "extended"
+// A single frame crossing the bottom or top threshold used to be enough to
+// flip the rep state machine — fine for a real athlete, but normal per-frame
+// pose-estimation jitter (camera noise, compression, even a completely
+// static scene) can flicker across a loose threshold on its own. That's how
+// a still image with a human-like shape in it — a poster, a photo, a
+// painting on a wall in a lane's half of frame — could rack up phantom reps
+// with nobody actually there: the model doesn't know the difference between
+// a real person and a picture of one, so this only guards against noise
+// pretending to be a real down-and-up cycle, not against a picture entirely.
+// A few consecutive frames is a small delay (well under a fifth of a second
+// at typical frame rates) that a genuine rep clears easily, but a
+// single-frame jitter spike can't.
+const REP_CONFIRM_FRAMES = 3;
 function isOverheadLockout(kp, armSide){
   const wrist = kp[`${armSide}_wrist`], elbow = kp[`${armSide}_elbow`], shoulder = kp[`${armSide}_shoulder`];
   if (!wrist || !elbow || !shoulder || wrist.score < 0.3 || elbow.score < 0.3 || shoulder.score < 0.3) return null; // can't see the arm clearly — see call site for how this is handled
@@ -301,6 +314,8 @@ class Lane {
     this.repEvents = []; // full per-rep log for this set: {rep, atSeconds, mode, bottomMetric, lockoutAngle, conf, flagged, reason}
     this.teamId = null; // set once Live Scoring is connected — which team this lane writes results for
     this._syncTimer = null; // debounce handle for syncCount()
+    this._bottomHoldFrames = 0; // consecutive frames the bottom condition has held — see REP_CONFIRM_FRAMES
+    this._topHoldFrames = 0;    // consecutive frames the lockout/standing condition has held
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
@@ -654,6 +669,13 @@ class Lane {
     }
 
     if (!this.atBottom && bottomHit){
+      this._bottomHoldFrames++;
+      if (this._bottomHoldFrames < REP_CONFIRM_FRAMES){
+        this.phaseEl.textContent = `${bottomLabel} — confirming…`;
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      this._bottomHoldFrames = 0;
       this.atBottom = true;
       // Capture exactly what tripped "bottom" right now — this is what gets
       // checked against the review margin once the rep completes at lockout.
@@ -662,6 +684,8 @@ class Lane {
       this.bottomConfAtHit = avgConf;
       this.phaseEl.textContent = `${bottomLabel} — ascending…`;
       this.phaseEl.classList.remove('hit');
+    } else if (!this.atBottom){
+      this._bottomHoldFrames = 0; // condition dropped before confirming — reset, don't carry partial progress across unrelated frames
     } else if (this.atBottom && angle > TOP){
       // Standing tall alone doesn't prove the weight/ball made it overhead —
       // Push Press and Wall Ball both need that checked explicitly, same
@@ -671,11 +695,19 @@ class Lane {
       if (overheadRequired){
         const overhead = isOverheadLockout(kp, wristSide);
         if (overhead === false){
+          this._topHoldFrames = 0;
           this.phaseEl.textContent = `standing (${angle.toFixed(0)}°) — not overhead yet`;
           this.phaseEl.classList.remove('hit');
           return;
         }
       }
+      this._topHoldFrames++;
+      if (this._topHoldFrames < REP_CONFIRM_FRAMES){
+        this.phaseEl.textContent = `lockout at ${angle.toFixed(0)}° — confirming…`;
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      this._topHoldFrames = 0;
       this.atBottom = false;
       this.reps += 1;
       this.countEl.textContent = this.reps;
@@ -684,6 +716,7 @@ class Lane {
       this.logRepEvent({ lockoutAngle: angle, mode });
       this.syncCount();
     } else if (this.atBottom){
+      this._topHoldFrames = 0;
       this.phaseEl.textContent = `ascending (${angle.toFixed(0)}°)`;
       this.phaseEl.classList.remove('hit');
     } else if (angle < TOP){
@@ -749,24 +782,6 @@ class Lane {
 }
 
 let detector, video, running = false, cameraStream = null;
-
-// Recording composite: laneA.canvas and laneB.canvas already have each
-// frame's cropped video PLUS the green-line/white-dot skeleton overlay
-// drawn onto them (see drawSkeleton) for the on-screen display. The
-// recorder previously captured the raw camera feed instead, which is why
-// saved clips never had the tracking overlay coaches see live. This canvas
-// mirrors both lane canvases side by side, unmodified, so captureStream()
-// on it records exactly what's on screen — same colors, same dots, same
-// lines, nothing about drawSkeleton() needed to change.
-const recCanvas = document.createElement('canvas');
-const recCtx = recCanvas.getContext('2d');
-function updateRecCanvas(){
-  if (!laneA.canvas || !laneB.canvas) return;
-  const w = laneA.canvas.width, h = laneA.canvas.height;
-  if (recCanvas.width !== w*2 || recCanvas.height !== h){ recCanvas.width = w*2; recCanvas.height = h; }
-  recCtx.drawImage(laneA.canvas, 0, 0);
-  recCtx.drawImage(laneB.canvas, w, 0);
-}
 const laneA = new Lane(document.querySelector('[data-lane=A]'));
 const laneB = new Lane(document.querySelector('[data-lane=B]'));
 laneA.crop = 'left'; laneB.crop = 'right';
@@ -852,11 +867,20 @@ exerciseSelectEl.addEventListener('change', () => {
   if (opt) document.getElementById('exerciseName').value = opt.textContent.replace(/^Gate \d+: /, '');
 });
 
-// ---- Recording: both lanes' annotated (skeleton-overlay) views, from GO to Reset, uploaded for coach review ----
-let mediaRecorder = null, recordedChunks = [], recStartPerf = null;
+// ---- Recording: two INDEPENDENT per-lane recordings, from GO to Reset, uploaded for coach review ----
+// Deliberately two separate clips, not one combined split-screen video: the
+// two lanes are very often two different gyms' athletes competing side by
+// side, and a shared clip would mean each gym's coach could see (and a
+// recordings list scoped to "your team" would even serve up) footage of the
+// OTHER gym's athlete too. Splitting per lane means each upload only ever
+// carries that lane's own view and its own rep log — nothing about the
+// neighbouring lane leaks into it, whichever lane it is.
+function makeRecorderState(lane){ return { mediaRecorder: null, chunks: [], recStartPerf: null, lane }; }
+const recA = makeRecorderState(laneA);
+const recB = makeRecorderState(laneB);
 const recStatusEl = document.getElementById('recStatus');
 
-function getRecSeconds(){ return mediaRecorder && mediaRecorder.state === 'recording' ? (performance.now() - recStartPerf) / 1000 : 0; }
+function getRecSeconds(r){ return r.mediaRecorder && r.mediaRecorder.state === 'recording' ? (performance.now() - r.recStartPerf) / 1000 : 0; }
 
 function pickMimeType(){
   for (const t of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
@@ -865,19 +889,27 @@ function pickMimeType(){
   return '';
 }
 
+function startRecorderFor(r){
+  if (!cameraStream || (r.mediaRecorder && r.mediaRecorder.state === 'recording')) return;
+  const mimeType = pickMimeType();
+  // Each lane records straight off its OWN canvas — which already has that
+  // lane's cropped video frame plus its own skeleton overlay drawn onto it
+  // every frame (see drawSkeleton) — so lane A's clip only ever shows lane
+  // A's view (whatever that is, including e.g. its own zoom/tracking
+  // quirks) and never bleeds into lane B's, or vice versa.
+  const recStream = r.lane.canvas.captureStream(30);
+  r.mediaRecorder = new MediaRecorder(recStream, mimeType ? { mimeType } : undefined);
+  r.chunks = [];
+  r.mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) r.chunks.push(e.data); };
+  r.mediaRecorder.start(1000); // gather in 1s chunks so a crash mid-set doesn't lose the whole clip
+  r.recStartPerf = performance.now();
+}
+
 function startRecording(){
-  if (!cameraStream || (mediaRecorder && mediaRecorder.state === 'recording')) return;
   try {
-    recordedChunks = [];
-    const mimeType = pickMimeType();
-    // Record the composite canvas (both lanes' annotated views, overlay and
-    // all) rather than the raw cameraStream — see recCanvas above for why.
-    const recStream = recCanvas.captureStream(30);
-    mediaRecorder = new MediaRecorder(recStream, mimeType ? { mimeType } : undefined);
-    mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) recordedChunks.push(e.data); };
-    mediaRecorder.start(1000); // gather in 1s chunks so a crash mid-set doesn't lose the whole clip
-    recStartPerf = performance.now();
-    recStatusEl.textContent = '● recording';
+    startRecorderFor(recA);
+    startRecorderFor(recB);
+    recStatusEl.textContent = '● recording (2 lanes)';
     recStatusEl.style.color = 'var(--danger)';
   } catch (e) {
     console.error('Wedgetail: could not start recording', e);
@@ -885,38 +917,32 @@ function startRecording(){
   }
 }
 
-// Stops recording, uploads the clip + both lanes' rep logs, then resolves —
-// deliberately never throws, so a bad connection never blocks Reset from
-// clearing counts for the next station.
-async function stopAndUploadRecording(){
-  if (!mediaRecorder || mediaRecorder.state === 'inactive') return;
-  const duration = getRecSeconds();
-  const finished = new Promise(resolve => { mediaRecorder.onstop = resolve; });
-  mediaRecorder.stop();
+// Stops one lane's recorder and uploads it as its own independent recording
+// — its own label, its own rep log only, nothing about the other lane
+// included. Never throws, so a bad connection or a rejected upload on one
+// lane never blocks Reset or the other lane's own upload.
+async function stopAndUploadOne(r, exerciseName, mode){
+  if (!r.mediaRecorder || r.mediaRecorder.state === 'inactive') return { ok: false, reason: 'not recording' };
+  const duration = getRecSeconds(r);
+  const finished = new Promise(resolve => { r.mediaRecorder.onstop = resolve; });
+  r.mediaRecorder.stop();
   await finished;
 
-  const mimeType = mediaRecorder.mimeType || 'video/webm';
-  const blob = new Blob(recordedChunks, { type: mimeType });
-  recordedChunks = [];
-  mediaRecorder = null;
+  const mimeType = r.mediaRecorder.mimeType || 'video/webm';
+  const blob = new Blob(r.chunks, { type: mimeType });
+  r.chunks = [];
+  r.mediaRecorder = null;
 
-  if (blob.size === 0) { recStatusEl.textContent = 'not recording'; recStatusEl.style.color = 'var(--slate)'; return; }
+  if (blob.size === 0) return { ok: false, reason: 'empty clip' };
 
-  const repLog = [
-    ...laneA.repEvents.map(r => ({ lane: laneA.label || 'A', ...r })),
-    ...laneB.repEvents.map(r => ({ lane: laneB.label || 'B', ...r })),
-  ];
-  const reviewFlags = repLog.filter(r => r.flagged).map(r => ({ lane: r.lane, rep: r.rep, atSeconds: r.atSeconds, reason: r.reason }));
-
-  recStatusEl.textContent = 'saving clip…';
-  recStatusEl.style.color = 'var(--amber)';
+  const repLog = r.lane.repEvents.map(ev => ({ lane: r.lane.label || '', ...ev }));
+  const reviewFlags = repLog.filter(ev => ev.flagged).map(ev => ({ lane: ev.lane, rep: ev.rep, atSeconds: ev.atSeconds, reason: ev.reason }));
 
   const form = new FormData();
   form.append('video', blob, 'clip.webm');
-  form.append('exercise_name', document.getElementById('exerciseName').value || 'Exercise');
-  form.append('mode', CFG.bottomMode());
-  form.append('lane_a_label', laneA.label || 'A');
-  form.append('lane_b_label', laneB.label || 'B');
+  form.append('exercise_name', exerciseName);
+  form.append('mode', mode);
+  form.append('lane_label', r.lane.label || '');
   form.append('duration_sec', String(duration));
   form.append('rep_log', JSON.stringify(repLog));
   form.append('review_flags', JSON.stringify(reviewFlags));
@@ -924,22 +950,28 @@ async function stopAndUploadRecording(){
   try {
     const res = await fetch('/api/wedgetail/recordings', { method: 'POST', body: form });
     const data = await res.json();
-    if (data.ok && data.stored) {
-      recStatusEl.textContent = `saved ✓ (${data.flagCount} flagged)`;
-      recStatusEl.style.color = 'var(--lime)';
-    } else {
-      // Show whatever the server actually said (storage not configured,
-      // invalid mode, etc.) instead of always blaming storage — a generic
-      // message here previously made an unrelated rejection (e.g. a mode
-      // recording wasn't wired up for) look like an R2 config problem.
-      recStatusEl.textContent = `clip not saved (${data.reason || data.error || 'unknown error'})`;
-      recStatusEl.style.color = 'var(--slate)';
-    }
+    if (data.ok && data.stored) return { ok: true, flagCount: data.flagCount };
+    return { ok: false, reason: data.reason || data.error || 'unknown error' };
   } catch (e) {
     console.error('Wedgetail: recording upload failed', e);
-    recStatusEl.textContent = 'clip failed to upload — reps unaffected';
-    recStatusEl.style.color = 'var(--danger)';
+    return { ok: false, reason: 'upload failed' };
   }
+}
+
+async function stopAndUploadRecording(){
+  const exerciseName = document.getElementById('exerciseName').value || 'Exercise';
+  const mode = CFG.bottomMode();
+  recStatusEl.textContent = 'saving clips…';
+  recStatusEl.style.color = 'var(--amber)';
+
+  const [resultA, resultB] = await Promise.all([
+    stopAndUploadOne(recA, exerciseName, mode),
+    stopAndUploadOne(recB, exerciseName, mode),
+  ]);
+
+  const label = (r, res) => `${r.lane.label || 'Lane'}: ${res.ok ? `saved ✓ (${res.flagCount} flagged)` : `not saved (${res.reason})`}`;
+  recStatusEl.textContent = `${label(recA, resultA)} · ${label(recB, resultB)}`;
+  recStatusEl.style.color = (resultA.ok && resultB.ok) ? 'var(--lime)' : 'var(--slate)';
 }
 
 document.getElementById('resetBtn').addEventListener('click', async () => {
@@ -1068,7 +1100,6 @@ async function loop(){
     // silently killing the requestAnimationFrame chain for good.
     await laneA.detect(detector, video);
     await laneB.detect(detector, video);
-    updateRecCanvas(); // keep the recording composite in sync every frame, whether or not a recording is currently running
     consecutiveErrors = 0;
   } catch (e) {
     // Any single bad frame — WebGL hiccup, camera glitch, anything — now
