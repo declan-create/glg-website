@@ -38,6 +38,11 @@ app.use(helmet({
       imgSrc: ["'self'", "data:"],
       fontSrc: ["'self'", "https://fonts.gstatic.com"],
       connectSrc: ["'self'", "https://cdn.jsdelivr.net", "https://tfhub.dev", "https://storage.googleapis.com", "https://www.kaggle.com", "https://kaggle.com"], // tfjs-core loads the actual MoveNet model weights from TF Hub/Kaggle Models at runtime, not from jsdelivr — the script tag is only the library code
+      // Wedgetail recording playback streams video directly from R2 via signed URLs.
+      // R2's virtual-hosted-style URLs put the bucket name in front of the account
+      // id (e.g. glg-wedgetail-recordings.<account-id>.r2.cloudflarestorage.com),
+      // so this has to be a wildcard subdomain rather than one fixed host.
+      mediaSrc: ["'self'", "https://*.r2.cloudflarestorage.com"],
     },
   },
 }));
