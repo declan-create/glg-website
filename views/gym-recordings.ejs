@@ -17,7 +17,7 @@
 
     <div class="table-wrap" style="margin-top:1.5rem;">
       <table>
-        <tr><th>Date</th><th>Exercise</th><th>Lanes</th><th>Duration</th><th>Flagged Reps</th><th></th></tr>
+        <tr><th>Date</th><th>Exercise</th><th>Lane / Team</th><th>Duration</th><th>Flagged Reps</th><th></th></tr>
         <% if (recordings.length === 0) { %>
           <tr><td colspan="6" style="color:var(--muted);text-align:center;padding:1.5rem;">No recordings yet.</td></tr>
         <% } %>
@@ -25,7 +25,7 @@
           <tr>
             <td><%= new Date(r.created_at).toLocaleString() %></td>
             <td><%= r.exercise_name %></td>
-            <td><%= r.lane_a_label || '—' %> / <%= r.lane_b_label || '—' %></td>
+            <td><%= r.lane_label || ((r.lane_a_label || '—') + ' / ' + (r.lane_b_label || '—')) %></td>
             <td><%= r.duration_sec ? Math.round(r.duration_sec) + 's' : '—' %></td>
             <td><%= r.reviewFlagsParsed.length %></td>
             <td><a href="/gym/recordings/<%= r.id %>" class="btn btn-outline btn-sm">Watch</a></td>

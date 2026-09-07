@@ -8,7 +8,7 @@
   </div>
   <div class="dash-main">
     <div class="section-eyebrow">Wedgetail Recording</div>
-    <h2><%= rec.exercise_name %> — <%= rec.lane_a_label || 'Lane A' %> / <%= rec.lane_b_label || 'Lane B' %></h2>
+    <h2><%= rec.exercise_name %> — <%= rec.lane_label || ((rec.lane_a_label || 'Lane A') + ' / ' + (rec.lane_b_label || 'Lane B')) %></h2>
     <p style="color:var(--muted);margin-top:.3rem;"><%= new Date(rec.created_at).toLocaleString() %></p>
 
     <% if (!playbackUrl) { %>
