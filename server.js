@@ -2190,7 +2190,7 @@ app.post('/api/wedgetail/recordings', recordingLimiter, recordingUpload.single('
     return res.json({ ok: false, stored: false, reason: 'Video storage not configured yet.' });
   }
 
-  const { exercise_name, mode, lane_a_label, lane_b_label, duration_sec, fixture_id } = req.body;
+  const { exercise_name, mode, lane_label, duration_sec, fixture_id } = req.body;
   // Recording was originally wired up for just the first two exercise modes;
   // the counting logic elsewhere in wedgetail.html has since grown to cover
   // several more (lunge, rack, twist, burpee, wallball), so the allow-list
@@ -2220,11 +2220,11 @@ app.post('/api/wedgetail/recordings', recordingLimiter, recordingUpload.single('
 
   const fixtureIdVal = fixture_id && db.prepare("SELECT id FROM fixtures WHERE id=?").get(fixture_id) ? fixture_id : null;
   const info = db.prepare(`
-    INSERT INTO recordings (fixture_id, exercise_name, mode, lane_a_label, lane_b_label, video_key, duration_sec, rep_log, review_flags, recorded_by_user_id)
-    VALUES (?,?,?,?,?,?,?,?,?,?)
+    INSERT INTO recordings (fixture_id, exercise_name, mode, lane_label, video_key, duration_sec, rep_log, review_flags, recorded_by_user_id)
+    VALUES (?,?,?,?,?,?,?,?,?)
   `).run(
     fixtureIdVal, exercise_name.trim().slice(0, 120), mode,
-    (lane_a_label || '').trim().slice(0, 80) || null, (lane_b_label || '').trim().slice(0, 80) || null,
+    (lane_label || '').trim().slice(0, 80) || null,
     key, parseFloat(duration_sec) || null, JSON.stringify(repLog), JSON.stringify(reviewFlags),
     req.session.user ? req.session.user.id : null
   );
@@ -2233,9 +2233,17 @@ app.post('/api/wedgetail/recordings', recordingLimiter, recordingUpload.single('
 });
 
 // Coaches (gym admins) see recordings tagged with one of their own team
-// names in either lane. Admin sees everything. This is a simple name-match
-// rather than a hard foreign key because a lane label is just whatever tag
-// was on-screen when recording started — it's descriptive, not a booking.
+// names. Admin sees everything. This is a simple name-match rather than a
+// hard foreign key because a lane label is just whatever tag was on-screen
+// when recording started — it's descriptive, not a booking.
+//
+// Matches on lane_label (new, one-lane-per-row recordings) OR the legacy
+// lane_a_label/lane_b_label pair (recordings made before the split-per-lane
+// change). Deliberately does NOT match "your team is in lane_a_label OR
+// lane_b_label" the way this used to, because that let a combined clip
+// showing BOTH gyms' athletes be opened by either gym's coach — the other
+// gym's footage along with it. New rows only ever carry one lane's data, so
+// this can no longer happen going forward.
 app.get('/gym/recordings', requireLogin, requireRole('gym_admin', 'admin'), async (req, res) => {
   let rows;
   if (req.session.user.role === 'admin') {
@@ -2249,9 +2257,10 @@ app.get('/gym/recordings', requireLogin, requireRole('gym_admin', 'admin'), asyn
       const placeholders = teams.map(() => '?').join(',');
       rows = db.prepare(`
         SELECT * FROM recordings
-        WHERE lane_a_label IN (${placeholders}) OR lane_b_label IN (${placeholders})
+        WHERE lane_label IN (${placeholders})
+           OR lane_a_label IN (${placeholders}) OR lane_b_label IN (${placeholders})
         ORDER BY created_at DESC LIMIT 200
-      `).all(...teams, ...teams);
+      `).all(...teams, ...teams, ...teams);
     }
   }
   rows.forEach(r => {
@@ -2267,7 +2276,8 @@ app.get('/gym/recordings/:id', requireLogin, requireRole('gym_admin', 'admin'), 
   if (req.session.user.role !== 'admin') {
     const gym = db.prepare("SELECT * FROM gyms WHERE admin_user_id=?").get(req.session.user.id);
     const teams = db.prepare("SELECT name FROM teams WHERE gym_id=?").all(gym.id).map(t => t.name);
-    if (!teams.includes(rec.lane_a_label) && !teams.includes(rec.lane_b_label)) {
+    const isOwnLane = teams.includes(rec.lane_label) || teams.includes(rec.lane_a_label) || teams.includes(rec.lane_b_label);
+    if (!isOwnLane) {
       return res.status(403).render('error', { title: 'Access Denied', message: "This recording isn't from one of your teams." });
     }
   }
