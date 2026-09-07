@@ -206,24 +206,28 @@ CREATE TABLE IF NOT EXISTS password_resets (
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
 );
 
--- Wedgetail session recordings. One row per recorded clip (one "set" from
--- Both-Ready-Go through reset/next exercise) — a clip covers both lanes at
--- once since they share a single camera frame. review_flags is a JSON array
--- of {lane, rep, atSeconds, reason} built from the same per-rep angle data
--- Wedgetail already computes live but, until now, never persisted — the
--- live threshold stays crude on purpose (doc: "algorithm's only job is to
--- keep the numbers flowing"), so flags mark reps worth a coach's second look
--- without changing what counted live.
+-- Wedgetail session recordings. One row per recorded clip, per LANE (one
+-- "set" from Both-Ready-Go through reset/next exercise, for one lane only —
+-- NOT a combined split-screen clip). Two lanes are very often two different
+-- gyms' athletes, so each upload only ever carries its own lane's video and
+-- rep log; lane_a_label/lane_b_label are legacy columns from before this
+-- split, kept only so pre-existing combined-clip rows still read correctly
+-- (see lane_label below for anything recorded since). review_flags is a
+-- JSON array of {lane, rep, atSeconds, reason} built from the same per-rep
+-- angle data Wedgetail already computes live but, until now, never
+-- persisted — the live threshold stays crude on purpose (doc: "algorithm's
+-- only job is to keep the numbers flowing"), so flags mark reps worth a
+-- coach's second look without changing what counted live.
 CREATE TABLE IF NOT EXISTS recordings (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   fixture_id INTEGER REFERENCES fixtures(id), -- nullable: Wedgetail can be used stand-alone, outside a scored fixture
   exercise_name TEXT NOT NULL,
-  mode TEXT NOT NULL, -- 'angle' | 'floor'
-  lane_a_label TEXT, -- team/athlete tag shown in that lane at record time, e.g. "GADIGAL"
-  lane_b_label TEXT,
+  mode TEXT NOT NULL, -- 'angle' | 'floor' | 'lunge' | 'rack' | 'twist' | 'burpee' | 'wallball'
+  lane_a_label TEXT, -- legacy: pre-split combined-clip rows only, see comment above
+  lane_b_label TEXT, -- legacy: pre-split combined-clip rows only, see comment above
   video_key TEXT NOT NULL, -- object key in the storage bucket
   duration_sec REAL,
-  rep_log TEXT,       -- JSON: full per-rep angle data for both lanes (everything captured, not just what's flagged)
+  rep_log TEXT,       -- JSON: full per-rep angle data for this lane only (everything captured, not just what's flagged)
   review_flags TEXT,  -- JSON: [{lane, rep, atSeconds, reason}], the subset worth a coach's attention
   recorded_by_user_id INTEGER REFERENCES users(id),
   created_at TEXT DEFAULT CURRENT_TIMESTAMP
@@ -316,6 +320,20 @@ try {
   db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_region ON teams(region_id, name COLLATE NOCASE);`);
 } catch (e) {
   console.error('[migration] Skipped team-name uniqueness index — existing duplicate team name(s) in a region. Resolve duplicates, then restart to enforce:', e.message);
+}
+
+// Migration: recordings moved from one combined clip per Both-Ready-Go
+// (both lanes sharing a single split-screen video) to two independent
+// per-lane recordings. Two lanes are very often two different gyms'
+// athletes, and a shared clip meant a gym-scoped recordings list could
+// serve up footage of the OTHER gym's athlete alongside their own — this
+// column lets a row describe just the one lane it actually belongs to.
+// lane_a_label/lane_b_label stay in place, unused going forward, so the
+// one pre-existing combined-clip row from before this change still reads
+// fine rather than needing a data migration for a single test recording.
+const recordingsCols = db.prepare("PRAGMA table_info(recordings)").all().map(c => c.name);
+if (!recordingsCols.includes('lane_label')) {
+  db.exec(`ALTER TABLE recordings ADD COLUMN lane_label TEXT;`);
 }
 
 const jaCols = db.prepare("PRAGMA table_info(judge_assignments)").all().map(c => c.name);
