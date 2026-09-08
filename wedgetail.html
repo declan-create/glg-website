@@ -1,0 +1,1188 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GLG — Camera Rep Counter (Prototype)</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;700;800&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+
+<!-- TensorFlow.js + MoveNet pose detection — loads from CDN, runs entirely
+     in this browser tab. No video is ever sent anywhere; nothing leaves
+     this device. This is the standard, current loading pattern from
+     TensorFlow's own docs. -->
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl"></script>
+<script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/pose-detection"></script>
+
+<style>
+  :root{
+    --forest:#001814; --dark2:#04241e; --lime:#a3e635; --off:#f4f4ef;
+    --slate:#8fa3a0; --danger:#d64545; --amber:#e6b400;
+  }
+  *{box-sizing:border-box;}
+  body{margin:0;background:var(--forest);color:var(--off);font-family:'Inter',sans-serif;}
+  h1,h2,.disp{font-family:'Barlow Condensed',sans-serif;font-weight:800;letter-spacing:.02em;}
+  /* Embed mode: hosted in an iframe inside the judge's live scoring page,
+     which already has its own header/clock/nav — so the prototype's own
+     header, the full explainer block, and the manual Fixture ID/category/
+     Connect controls (redundant with the deep link + auto-connect) are all
+     hidden, leaving just the camera lanes and the controls a judge actually
+     taps mid-match. */
+  body.embed header, body.embed .howto, body.embed .live-link-fields { display:none; }
+  body.embed .controls { padding:.5rem .6rem; gap:.5rem; }
+  header{padding:1.4rem 1.6rem 1rem;border-bottom:1px solid rgba(163,230,53,.25);}
+  header h1{margin:0;font-size:1.6rem;color:var(--lime);}
+  header p{margin:.3rem 0 0;color:var(--slate);font-size:.85rem;max-width:70ch;}
+  .badge{display:inline-block;background:rgba(230,180,0,.15);color:var(--amber);border:1px solid rgba(230,180,0,.4);
+    font-size:.68rem;font-weight:700;letter-spacing:.08em;text-transform:uppercase;padding:.2rem .55rem;border-radius:99px;margin-bottom:.5rem;}
+
+  .controls{display:flex;flex-wrap:wrap;gap:1.2rem;align-items:end;padding:1rem 1.6rem;background:var(--dark2);border-bottom:1px solid rgba(163,230,53,.15);}
+  .field{display:flex;flex-direction:column;gap:.25rem;}
+  .field label{font-size:.68rem;text-transform:uppercase;letter-spacing:.08em;color:var(--slate);font-weight:600;}
+  .field input, .field select{background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.18);color:var(--off);
+    border-radius:6px;padding:.4rem .55rem;font-size:.9rem;width:9rem;}
+  button{cursor:pointer;border:0;border-radius:8px;font-family:'Barlow Condensed',sans-serif;font-weight:700;letter-spacing:.03em;}
+  .btn-main{background:var(--lime);color:var(--forest);padding:.55rem 1.3rem;font-size:.95rem;}
+  .btn-main:disabled{opacity:.5;cursor:not-allowed;}
+  .btn-outline{background:transparent;border:1px solid rgba(255,255,255,.3);color:var(--off);padding:.5rem 1rem;font-size:.85rem;}
+
+  .stage{display:grid;grid-template-columns:1fr 1fr;gap:1.2rem;padding:1.2rem 1.6rem;}
+  @media (max-width:820px){.stage{grid-template-columns:1fr;}}
+
+  .lane{background:var(--dark2);border:1px solid rgba(163,230,53,.2);border-radius:12px;overflow:hidden;}
+  .lane-head{display:flex;justify-content:space-between;align-items:center;padding:.7rem 1rem;border-bottom:1px solid rgba(255,255,255,.08);}
+  .lane-head .tag{font-size:.95rem;color:var(--lime);}
+  .lane-head .conf{font-size:.68rem;color:var(--slate);}
+  .lane-head .conf.low{color:var(--danger);}
+
+  .video-wrap{position:relative;width:100%;aspect-ratio:8/9;background:#000;}
+  .video-wrap canvas{position:absolute;top:0;left:0;width:100%;height:100%;}
+
+  .phase-strip{padding:.5rem 1rem;font-size:.85rem;font-weight:600;color:var(--slate);border-top:1px solid rgba(255,255,255,.08);}
+  .phase-strip.waiting{color:var(--amber);font-weight:800;font-size:.95rem;background:rgba(230,180,0,.08);}
+  .phase-strip.hit{color:var(--lime);}
+
+  .lane-foot{display:flex;align-items:center;justify-content:space-between;padding:.9rem 1rem;gap:.8rem;}
+  .repcount{font-family:'Barlow Condensed',sans-serif;font-weight:800;font-size:2.6rem;line-height:1;}
+  .repcount .lbl{display:block;font-size:.62rem;color:var(--slate);font-weight:600;letter-spacing:.08em;text-transform:uppercase;}
+  .lane-actions{display:flex;gap:.5rem;}
+  .btn-norep{background:var(--danger);color:#fff;padding:.6rem 1.1rem;font-size:.95rem;}
+  .btn-plus{background:rgba(255,255,255,.1);color:var(--off);padding:.5rem .8rem;font-size:.85rem;}
+
+  .howto{margin:0 1.6rem 1.6rem;background:rgba(163,230,53,.06);border:1px solid rgba(163,230,53,.2);border-radius:10px;padding:1rem 1.2rem;font-size:.85rem;color:var(--off);line-height:1.55;}
+  .howto b{color:var(--lime);}
+  .howto ul{margin:.4rem 0 0;padding-left:1.2rem;}
+  code{background:rgba(255,255,255,.08);padding:.1rem .35rem;border-radius:4px;font-size:.85em;}
+</style>
+</head>
+<body>
+
+<header>
+  <span class="badge">Prototype — needs venue testing before live use</span>
+  <h1>GLG Camera Rep Counter</h1>
+  <p>One camera, two independent tracking zones — each one automatically finds and follows its athlete, so you
+     don't need to nail an exact camera position. Pose estimation counts reps off a hip–knee angle cycle (squat /
+     deadlift movement pattern), <b style="color:var(--off)">deliberately generously</b> — the count is meant to be
+     crude and fast, not a form judge. All quality control lives with the coach, made live via
+     <b style="color:var(--off)">NO REP</b>. Tracking itself runs entirely in this browser tab; the raw camera feed from
+     GO to Reset is uploaded afterwards so coaches can review it, with reps close to the cutoff flagged for a second look.</p>
+</header>
+
+<div class="controls">
+  <div class="field">
+    <label>Exercise</label>
+    <input id="exerciseName" value="Trap Bar Deadlift" />
+  </div>
+  <div class="field">
+    <label>Bottom-check mode</label>
+    <select id="bottomMode">
+      <option value="angle">Joint angle (squat depth)</option>
+      <option value="floor">Weight-to-floor (calibrated — deadlift / snatch)</option>
+      <option value="lunge">Knee-to-ground (standing lunge)</option>
+      <option value="rack">Rack-to-overhead (push press)</option>
+      <option value="wallball">Squat-to-overhead (wall ball)</option>
+      <option value="twist">Side-to-side crossing (Russian twist)</option>
+      <option value="burpee">Hands-to-floor + stand (burpee box jump-over)</option>
+    </select>
+  </div>
+  <div class="field" id="bottomAngleField">
+    <label>Bottom angle (° at knee)</label>
+    <input id="bottomAngle" type="number" value="135" min="60" max="160" />
+  </div>
+  <div class="field" id="floorToleranceField" style="display:none;">
+    <label>Ground tolerance (px)</label>
+    <input id="floorTolerance" type="number" value="45" min="5" max="80" />
+  </div>
+  <div class="field" id="requireOverheadField" style="display:none;">
+    <label>Overhead lockout (DB Snatch)</label>
+    <input id="requireOverhead" type="checkbox" style="width:1.3rem;height:1.3rem;" />
+  </div>
+  <div class="field">
+    <label>Lockout angle (° at knee)</label>
+    <input id="topAngle" type="number" value="150" min="120" max="180" />
+  </div>
+  <div class="field">
+    <label>Camera</label>
+    <select id="cameraSelect"><option value="">Default camera</option></select>
+  </div>
+  <div class="field live-link-fields">
+    <label>Fixture ID</label>
+    <input id="fixtureId" type="number" placeholder="e.g. 12" style="width:6rem;" />
+  </div>
+  <div class="field live-link-fields">
+    <label>Category</label>
+    <select id="categorySelect">
+      <option value="mens_singles">Men's Singles</option>
+      <option value="womens_singles">Women's Singles</option>
+      <option value="mens_doubles">Men's Doubles</option>
+      <option value="womens_doubles">Women's Doubles</option>
+      <option value="mixed_doubles">Mixed Doubles</option>
+    </select>
+  </div>
+  <div class="field">
+    <label>Exercise (live scoring)</label>
+    <select id="exerciseSelect" style="width:13rem;"><option value="">Not connected</option></select>
+  </div>
+  <button class="btn-outline live-link-fields" id="connectBtn">Connect Live Scoring</button>
+  <div class="field">
+    <label>Live scoring</label>
+    <span id="liveSyncStatus" style="font-size:.85rem;color:var(--slate);padding:.4rem 0;">not connected — counts stay local</span>
+  </div>
+  <button class="btn-main" id="startBtn">Start Camera</button>
+  <button class="btn-main" id="goBtn" style="display:none;background:var(--amber);" disabled>BOTH READY — GO</button>
+  <button class="btn-outline" id="resetBtn">Reset for Next Station</button>
+  <button class="btn-outline" id="calibrateBtn" style="display:none;border-color:var(--lime);color:var(--lime);">Calibrate Floor (both lanes)</button>
+  <div class="field">
+    <label>Recording</label>
+    <span id="recStatus" style="font-size:.85rem;color:var(--slate);padding:.4rem 0;">not recording</span>
+  </div>
+</div>
+
+<div class="stage">
+  <div class="lane" data-lane="A">
+    <div class="lane-head"><span class="tag" data-role="tag">Lane A</span><span class="conf" data-role="conf">tracking: —</span></div>
+    <div class="video-wrap"><canvas data-role="canvas"></canvas></div>
+    <div class="phase-strip" data-role="phase">waiting for camera…</div>
+    <div class="lane-foot">
+      <div class="repcount"><span class="lbl">Reps</span><span data-role="count">0</span></div>
+      <div class="lane-actions">
+        <button class="btn-plus" data-role="plus">+1</button>
+        <button class="btn-norep" data-role="norep">NO REP</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="lane" data-lane="B">
+    <div class="lane-head"><span class="tag" data-role="tag">Lane B</span><span class="conf" data-role="conf">tracking: —</span></div>
+    <div class="video-wrap"><canvas data-role="canvas"></canvas></div>
+    <div class="phase-strip" data-role="phase">waiting for camera…</div>
+    <div class="lane-foot">
+      <div class="repcount"><span class="lbl">Reps</span><span data-role="count">0</span></div>
+      <div class="lane-actions">
+        <button class="btn-plus" data-role="plus">+1</button>
+        <button class="btn-norep" data-role="norep">NO REP</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="howto">
+  <b>Camera setup for a real test:</b> tripod or propped device, framing both lanes side by side, each athlete visible
+  head-to-ankle from a side-on angle. Good even lighting, no one crossing between the two lanes mid-set.
+  <ul>
+    <li><b>The clock never pauses — only the counter's start does.</b> The camera can be live and framing/calibrating the
+        moment it's mounted, but nothing counts until the judge taps <b>BOTH READY — GO</b>. That's the moment both
+        athletes are acknowledged set — the same beat a human judge already takes before counting the first rep, just
+        made explicit. Use <b>Reset for Next Station</b> once a station ends to clear counts, drop calibration, and
+        disarm ready for the next remount.</li>
+    <li><b>Two different "bottom" checks, because they're two different physical facts.</b> Goblet Squat's validity is a
+        <b>body position</b> — hip crease below the knee — so joint-angle mode is the right tool. Trap Bar Deadlift and
+        DB Snatch are actually judged on an <b>equipment</b> fact — the weight returning to the floor between reps — which
+        a body-only pose model can't see directly. "Weight-to-floor" mode gets there anyway: it calibrates once to the
+        athlete's wrist height while the bar is genuinely resting on the floor, then treats "wrist back at that height"
+        as the floor check. Re-calibrate whenever the bar, plates, or athlete changes.</li>
+    <li>This build tracks a <b>hip–knee–ankle extension cycle</b> for lockout in both modes. Push Press needs a different
+        state machine again — its bottom is a rack position at the shoulder, not a floor check — tracking shoulder–elbow–wrist
+        instead; not wired up in this prototype.</li>
+    <li>If a lane shows <span style="color:var(--danger)">tracking: low</span>, the model can't see that athlete's joints clearly —
+        counting pauses automatically rather than guessing.</li>
+    <li><b>NO REP</b> removes the last counted rep for that lane — same action as the "−" button already in the Live Counter
+        screen. <b>+1</b> adds one back if the camera missed a genuine rep.</li>
+    <li><b>Live scoring:</b> enter the Fixture ID and category above and tap <b>Connect Live Scoring</b> (you must be
+        logged in as the judge assigned to that category). Each auto-count, <b>+1</b>, or <b>NO REP</b> then writes
+        straight to the same <code>/api/judge/fixture/:id/category/:cat/result</code> endpoint the Live Counter screen
+        uses — so the scoreboard, Watch Live, and Cast Display all update as this camera counts, not after the fact.
+        Leave it disconnected to run this as a local-only rep counter.</li>
+    <li><b>Recording:</b> from <b>BOTH READY — GO</b> until <b>Reset for Next Station</b>, the raw camera feed (both lanes,
+        exactly what's on screen) is recorded and, on reset, uploaded for coaches to review afterwards. Reps whose
+        bottom position was close to the live cutoff — not necessarily bad, just close — get flagged with a timestamp
+        so a coach can jump straight to them. This never changes what counted live; it's coaching material, not a
+        scoring appeal. If the upload fails (e.g. bad connection), the reps already counted are unaffected — only the
+        clip is lost.</li>
+  </ul>
+</div>
+
+<script>
+const CFG = {
+  bottomAngle: () => parseFloat(document.getElementById('bottomAngle').value),
+  topAngle: () => parseFloat(document.getElementById('topAngle').value),
+  bottomMode: () => document.getElementById('bottomMode').value,
+  floorTolerance: () => parseFloat(document.getElementById('floorTolerance').value),
+  requireOverhead: () => document.getElementById('requireOverhead').checked,
+};
+
+const CONNECTIONS = [
+  ['left_shoulder','right_shoulder'],['left_shoulder','left_elbow'],['left_elbow','left_wrist'],
+  ['right_shoulder','right_elbow'],['right_elbow','right_wrist'],
+  ['left_shoulder','left_hip'],['right_shoulder','right_hip'],['left_hip','right_hip'],
+  ['left_hip','left_knee'],['left_knee','left_ankle'],
+  ['right_hip','right_knee'],['right_knee','right_ankle'],
+];
+
+function kpByName(keypoints){
+  const m = {};
+  for (const k of keypoints) m[k.name] = k;
+  return m;
+}
+function angleAt(a,b,c){
+  const ab = {x:a.x-b.x, y:a.y-b.y}, cb = {x:c.x-b.x, y:c.y-b.y};
+  const dot = ab.x*cb.x + ab.y*cb.y;
+  const mag = Math.hypot(ab.x,ab.y)*Math.hypot(cb.x,cb.y);
+  if (mag === 0) return null;
+  const cos = Math.min(1, Math.max(-1, dot/mag));
+  return Math.acos(cos) * 180/Math.PI;
+}
+
+// DB Snatch's real "lockout" is the weight overhead with the arm extended —
+// standing up straight (the existing hip/knee/ankle check) doesn't prove
+// that happened at all, it only proves the athlete stood up, which they
+// could do with the weight still at the rack or hip. This checks the same
+// arm that's tracked for the floor-touch, generously: wrist clearly above
+// shoulder height, elbow close to straight. Kept crude on purpose, same
+// philosophy as the rest of the counter — a coach's NO REP still overrides
+// any borderline call, this just stops the obvious miss (weight never left
+// the rack) from counting automatically.
+const OVERHEAD_MARGIN_PX = 15;   // wrist must clear the shoulder by at least this many px
+const OVERHEAD_ELBOW_MIN = 150;  // degrees — how straight the arm needs to be to call it "extended"
+// A single frame crossing the bottom or top threshold used to be enough to
+// flip the rep state machine — fine for a real athlete, but normal per-frame
+// pose-estimation jitter (camera noise, compression, even a completely
+// static scene) can flicker across a loose threshold on its own. That's how
+// a still image with a human-like shape in it — a poster, a photo, a
+// painting on a wall in a lane's half of frame — could rack up phantom reps
+// with nobody actually there: the model doesn't know the difference between
+// a real person and a picture of one, so this only guards against noise
+// pretending to be a real down-and-up cycle, not against a picture entirely.
+// A few consecutive frames is a small delay (well under a fifth of a second
+// at typical frame rates) that a genuine rep clears easily, but a
+// single-frame jitter spike can't. Progress toward this decays by one frame
+// rather than resetting to zero the instant the condition drops for even
+// one frame — a real, fast rep can have an isolated noisy frame in the
+// middle of an otherwise clean hold without losing all its progress, while
+// sustained noise (nothing genuinely there) still can't outrun the decay.
+const REP_CONFIRM_FRAMES = 3;
+function isOverheadLockout(kp, armSide){
+  const wrist = kp[`${armSide}_wrist`], elbow = kp[`${armSide}_elbow`], shoulder = kp[`${armSide}_shoulder`];
+  if (!wrist || !elbow || !shoulder || wrist.score < 0.3 || elbow.score < 0.3 || shoulder.score < 0.3) return null; // can't see the arm clearly — see call site for how this is handled
+  const wristAboveShoulder = (shoulder.y - wrist.y) > OVERHEAD_MARGIN_PX; // smaller y = higher up on screen
+  const armAngle = angleAt(shoulder, elbow, wrist);
+  const armExtended = armAngle != null && armAngle > OVERHEAD_ELBOW_MIN;
+  return wristAboveShoulder && armExtended;
+}
+
+class Lane {
+  constructor(el){
+    this.el = el;
+    this.canvas = el.querySelector('[data-role=canvas]');
+    this.ctx = this.canvas.getContext('2d');
+    this.confEl = el.querySelector('[data-role=conf]');
+    this.phaseEl = el.querySelector('[data-role=phase]');
+    this.countEl = el.querySelector('[data-role=count]');
+    this.reps = 0;
+    this.atBottom = false;
+    this.crop = null; // {sx, sw} — which half of the source video this lane reads
+    this.floorRefY = null; // calibrated wrist-height reference for "weight on floor" (in FIELD space — see grabFrame)
+    this.lastWrist = null; // most recent {x,y,score} for the tracked wrist, in FIELD space
+    this.armed = false; // camera can be live/framing without counting — counting only starts once the judge taps GO
+    this.view = null; // {x,y,w,h} — the auto-tracking crop window within this lane's raw half-frame, in raw pixels
+    this.rawHalf = {sw:0, sh:0}; // this lane's full half-frame size, in raw video pixels
+    this.lostSince = null; // timestamp tracking was last lost — drives the widen-and-search-again behaviour
+    this.lockCenter = null; // FIELD-space hip/shoulder midpoint of the currently-locked athlete — null means "not locked onto anyone yet"
+    this.candidate = null; // {x, y, frames} — a pose that jumped far from lockCenter, held here until it proves it's not just someone walking through
+    this.twistSide = null; // 'left' | 'right' | null — last confirmed side touched, for Russian Twist
+    this.label = el.querySelector('.tag') ? el.querySelector('.tag').textContent.trim() : (el.dataset.lane || '');
+    this.bottomMetricAtHit = null; // the angle (or floor delta) captured at the instant "bottom" triggered, for this rep in progress
+    this.bottomConfAtHit = null;   // tracking confidence at that same instant
+    this.repEvents = []; // full per-rep log for this set: {rep, atSeconds, mode, bottomMetric, lockoutAngle, conf, flagged, reason}
+    this.teamId = null; // set once Live Scoring is connected — which team this lane writes results for
+    this._syncTimer = null; // debounce handle for syncCount()
+    this._bottomHoldFrames = 0; // consecutive frames the bottom condition has held — see REP_CONFIRM_FRAMES
+    this._topHoldFrames = 0;    // consecutive frames the lockout/standing condition has held
+
+    el.querySelector('[data-role=norep]').addEventListener('click', () => {
+      this.reps = Math.max(0, this.reps - 1);
+      this.countEl.textContent = this.reps;
+      // the removed rep is still in repEvents (it's the raw record of what the
+      // camera saw) — just drop the most recent one so the log matches the count
+      this.repEvents = this.repEvents.filter(r => r.rep <= this.reps);
+      this.syncCount();
+    });
+    el.querySelector('[data-role=plus]').addEventListener('click', () => {
+      this.reps += 1;
+      this.countEl.textContent = this.reps;
+      this.repEvents.push({ rep: this.reps, atSeconds: getRecSeconds(), mode: CFG.bottomMode(), bottomMetric: null, lockoutAngle: null, conf: null, flagged: false, reason: 'manually added (+1) by judge' });
+      this.syncCount();
+    });
+  }
+
+  // Pushes this lane's current rep count to the live scoring endpoint, if
+  // connected. Debounced so a fast burst of reps (or a quick NO REP right
+  // after a count) collapses into one request rather than one per rep.
+  syncCount(){
+    if (!LIVE.connected || !LIVE.exerciseId || !this.teamId) return;
+    clearTimeout(this._syncTimer);
+    const reps = this.reps;
+    this._syncTimer = setTimeout(async () => {
+      try {
+        await fetch(`/api/judge/fixture/${LIVE.fixtureId}/category/${LIVE.category}/result`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ exercise_id: LIVE.exerciseId, team_id: this.teamId, raw_value: reps }),
+        });
+      } catch (e) { /* next rep's sync (or the interval retry below) will catch it back up */ }
+    }, 250);
+  }
+
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
+
+  // Grabs this lane's half of the shared video — but rather than a rigid
+  // static crop, each lane maintains its own "view window" that smoothly
+  // zooms and pans to follow wherever the athlete actually is standing.
+  // The judge/athlete no longer has to hit an exact mark; the software
+  // finds them within their half of frame and keeps them centred.
+  grabFrame(video){
+    const vw = video.videoWidth, vh = video.videoHeight;
+    if (!vw) return null;
+    const sw = vw/2, sh = vh;
+    const sx = this.crop === 'right' ? sw : 0;
+    this.rawHalf = {sw, sh};
+    if (!this.view) this.view = {x:0, y:0, w:sw, h:sh}; // start seeing the whole half, so it can find someone anywhere in it
+
+    const CANVAS_W = 480, CANVAS_H = 640; // fixed working resolution regardless of zoom level — keeps the detector input consistent
+    if (this.canvas.width !== CANVAS_W || this.canvas.height !== CANVAS_H){
+      this.canvas.width = CANVAS_W; this.canvas.height = CANVAS_H;
+    }
+    // draw video-space (sx+view.x, view.y, view.w, view.h) scaled up to fill the canvas
+    this.ctx.drawImage(video, sx+this.view.x, this.view.y, this.view.w, this.view.h, 0, 0, CANVAS_W, CANVAS_H);
+    return this.canvas;
+  }
+
+  // Converts a keypoint from canvas pixel space (what the detector sees,
+  // which changes as the view window zooms) back into a stable coordinate
+  // system fixed to this lane's raw half-frame — so angle checks and the
+  // floor calibration keep meaning the same thing regardless of zoom.
+  toField(pt){
+    return {
+      x: this.view.x + (pt.x / this.canvas.width) * this.view.w,
+      y: this.view.y + (pt.y / this.canvas.height) * this.view.h,
+      score: pt.score,
+    };
+  }
+
+  // Nudges the view window toward a box that comfortably contains the
+  // detected athlete, padded generously so normal movement doesn't fall
+  // out of frame, smoothed so it drifts rather than jumps.
+  followAthlete(fieldKp){
+    const pts = ['left_shoulder','right_shoulder','left_hip','right_hip','left_knee','right_knee','left_ankle','right_ankle','left_wrist','right_wrist']
+      .map(n => fieldKp[n]).filter(p => p && p.score > 0.3);
+
+    if (pts.length < 3) {
+      // Can't see the athlete well this frame. Don't just hold the current
+      // zoom forever — if this drags on (a Mixed Doubles partner stepping
+      // back, someone walking off to the next station), widen back toward
+      // the full half-frame so the camera can find whoever's actually
+      // there now, instead of staring at an empty patch of floor.
+      if (this.lostSince == null) this.lostSince = performance.now();
+      if (performance.now() - this.lostSince > 2000) {
+        const {sw, sh} = this.rawHalf;
+        const L = 0.05;
+        this.view.x += (0-this.view.x)*L; this.view.y += (0-this.view.y)*L;
+        this.view.w += (sw-this.view.w)*L; this.view.h += (sh-this.view.h)*L;
+        // Genuinely gone, not just occluded for a moment — drop the identity lock too.
+        // Whoever the camera finds next (once it's widened back out) is treated as a
+        // fresh, legitimate acquisition rather than a suspicious jump from where the
+        // athlete used to be. Without this, a partner who stepped away and comes back
+        // in a different spot would otherwise sit in "verifying" limbo for no reason.
+        this.lockCenter = null; this.candidate = null;
+      }
+      return;
+    }
+    this.lostSince = null; // tracking someone confidently again — cancel any search-widen in progress
+
+    let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
+    for (const p of pts){ minX=Math.min(minX,p.x); maxX=Math.max(maxX,p.x); minY=Math.min(minY,p.y); maxY=Math.max(maxY,p.y); }
+    const padX = (maxX-minX)*0.7 + 30, padY = (maxY-minY)*0.35 + 40; // generous — room to move without re-triggering a re-frame
+    let tx = minX-padX, ty = minY-padY, tw = (maxX-minX)+padX*2, th = (maxY-minY)+padY*2;
+
+    // Keep the same aspect ratio as the canvas (480:640) — otherwise the
+    // crop gets stretched to fill the canvas, which silently distorts every
+    // joint angle computed from it, not just the picture.
+    const CANVAS_ASPECT = 480/640;
+    if (tw/th > CANVAS_ASPECT){ const nh = tw/CANVAS_ASPECT; ty -= (nh-th)/2; th = nh; }
+    else { const nw = th*CANVAS_ASPECT; tx -= (nw-tw)/2; tw = nw; }
+
+    // keep the target within this lane's own half — never zoom into the neighbouring lane or off-frame
+    const {sw, sh} = this.rawHalf;
+    tw = Math.min(tw, sw); th = Math.min(th, sh);
+    tx = Math.max(0, Math.min(tx, sw-tw));
+    ty = Math.max(0, Math.min(ty, sh-th));
+
+    const L = 0.08; // lerp factor — smooth drift, not a snap, so tracking doesn't feel jittery
+    this.view.x += (tx-this.view.x)*L; this.view.y += (ty-this.view.y)*L;
+    this.view.w += (tw-this.view.w)*L; this.view.h += (th-this.view.h)*L;
+  }
+
+  async detect(detector, video){
+    const frame = this.grabFrame(video);
+    if (!frame) return;
+    const poses = await detector.estimatePoses(frame, {flipHorizontal:false});
+    this.ctx.drawImage(frame, 0, 0);
+    if (!poses.length){
+      this.confEl.textContent = 'tracking: none'; this.confEl.classList.add('low');
+      this.followAthlete({}); // nobody visible in the current crop at all — let it start widening to search again
+      return;
+    }
+    const kpCanvas = kpByName(poses[0].keypoints); // canvas-space — for drawing the overlay only
+    this.drawSkeleton(kpCanvas);
+
+    const kpField = {}; // raw-half-frame space — for counting logic + view tracking, stable across zoom
+    for (const name of Object.keys(kpCanvas)) kpField[name] = this.toField(kpCanvas[name]);
+
+    // --- Identity continuity check ---
+    // MoveNet's single-pose model has no concept of "the same person as last
+    // frame" — it just returns whichever pose it's most confident about in
+    // the current crop. Normally that's fine because the crop is narrowed
+    // onto the athlete already, but if a bystander (a coach, another athlete
+    // walking to the next station) passes through that narrowed crop, the
+    // model happily reports *their* pose instead, and it would get counted
+    // as reps. Guard against that: a pose is only trusted immediately if
+    // it's close to where the tracked athlete was last seen. A pose that
+    // jumps a long way has to hold steady near its new spot for several
+    // consecutive frames before it's accepted — long enough to tell a real
+    // hand-off (athlete moved further than expected) apart from someone
+    // briefly crossing the shot, which rarely lingers that long.
+    const torsoPts = ['left_hip','right_hip','left_shoulder','right_shoulder'].map(n => kpField[n]).filter(p => p && p.score > 0.3);
+    if (torsoPts.length){
+      let cx=0, cy=0; for (const p of torsoPts){ cx+=p.x; cy+=p.y; } cx/=torsoPts.length; cy/=torsoPts.length;
+      const CONFIRM_FRAMES = 8; // ~0.4–0.6s at this loop's typical rate — enough to reject a quick walk-through, not enough to feel laggy on a real hand-off
+      if (!this.lockCenter){
+        this.lockCenter = {x:cx, y:cy}; // nobody locked yet (fresh start, or just re-widened after losing the athlete) — accept immediately
+        this.candidate = null;
+      } else {
+        const dist = Math.hypot(cx-this.lockCenter.x, cy-this.lockCenter.y);
+        const maxJump = Math.max(this.rawHalf.sw, this.rawHalf.sh) * 0.18; // generous per-frame movement allowance for a real athlete
+        if (dist <= maxJump){
+          this.lockCenter.x += (cx-this.lockCenter.x)*0.3; this.lockCenter.y += (cy-this.lockCenter.y)*0.3; // same person — smoothly track them
+          this.candidate = null;
+        } else {
+          if (!this.candidate || Math.hypot(cx-this.candidate.x, cy-this.candidate.y) > maxJump*0.5){
+            this.candidate = {x:cx, y:cy, frames:1}; // a new, different jump — start a fresh confirmation count
+          } else {
+            this.candidate.x = cx; this.candidate.y = cy; this.candidate.frames++;
+          }
+          if (this.candidate.frames >= CONFIRM_FRAMES){
+            this.lockCenter = {x:cx, y:cy}; this.candidate = null; // held steady long enough — treat as a genuine hand-off
+          } else {
+            // Not confirmed yet — don't chase this pose with the camera and don't count off it.
+            // Keep counting/framing paused on the real athlete's last known position instead.
+            this.confEl.textContent = 'tracking: verifying'; this.confEl.classList.add('low');
+            this.followAthlete({});
+            return;
+          }
+        }
+      }
+    }
+
+    this.followAthlete(kpField);
+    this.updateCount(kpField);
+  }
+
+  drawSkeleton(kp){
+    const ctx = this.ctx;
+    ctx.lineWidth = 3; ctx.strokeStyle = '#a3e635';
+    for (const [a,b] of CONNECTIONS){
+      const pa = kp[a], pb = kp[b];
+      if (pa && pb && pa.score>0.3 && pb.score>0.3){
+        ctx.beginPath(); ctx.moveTo(pa.x,pa.y); ctx.lineTo(pb.x,pb.y); ctx.stroke();
+      }
+    }
+    ctx.fillStyle = '#f4f4ef';
+    for (const name of Object.keys(kp)){
+      const p = kp[name];
+      if (p.score>0.3){ ctx.beginPath(); ctx.arc(p.x,p.y,5,0,7); ctx.fill(); }
+    }
+  }
+
+  calibrate(){
+    if (!this.lastWrist || this.lastWrist.score < 0.3){
+      this.phaseEl.textContent = 'calibration failed — wrist not clearly visible, try again';
+      return false;
+    }
+    this.floorRefY = this.lastWrist.y;
+    this.phaseEl.textContent = `floor calibrated at this wrist height — ready`;
+    this.phaseEl.classList.add('hit');
+    return true;
+  }
+
+  // The live cutoff stays crude on purpose — the count only needs to keep
+  // flowing, quality control is the coach's job via NO REP in the moment.
+  // This is the finer-grained side of that same idea after the fact: a rep
+  // that only just cleared the crude bar gets flagged for a coach to look
+  // at later, without touching whether it counted live.
+  logRepEvent({ lockoutAngle, mode }){
+    const ANGLE_REVIEW_MARGIN = 8;  // degrees — how close to the bottom-angle cutoff counts as "borderline"
+    const FLOOR_REVIEW_MARGIN = 12; // px — how close to the floor tolerance counts as "borderline"
+    const LOW_CONF_THRESHOLD = 0.5; // below this, trust the video review over the live call
+
+    let flagged = false, reason = null;
+    if (mode === 'floor' || mode === 'burpee') {
+      const tol = CFG.floorTolerance();
+      const marginFromLine = this.bottomMetricAtHit - (-tol); // how far past the tolerance line it was, in px
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `${mode === 'burpee' ? 'hands' : 'weight'} only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+    } else if (mode === 'lunge' || mode === 'rack') {
+      const tol = CFG.floorTolerance();
+      const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin it had below the tolerance line
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `${mode === 'rack' ? 'rack position' : 'knee'} only just reached ground tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+    } else if (mode === 'twist') {
+      const tol = CFG.floorTolerance();
+      const marginFromLine = this.bottomMetricAtHit - tol; // how far past the crossing margin the wrist got
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `twist only just crossed the midline margin (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px required)`; }
+    } else {
+      const threshold = CFG.bottomAngle();
+      const marginFromLine = threshold - this.bottomMetricAtHit; // how many degrees deeper than the cutoff it went
+      if (marginFromLine < ANGLE_REVIEW_MARGIN) { flagged = true; reason = `depth only just cleared the cutoff (${this.bottomMetricAtHit.toFixed(0)}° vs ${threshold}° needed)`; }
+    }
+    if (!flagged && this.bottomConfAtHit != null && this.bottomConfAtHit < LOW_CONF_THRESHOLD) {
+      flagged = true; reason = `tracking confidence was low at the bottom of this rep (${(this.bottomConfAtHit*100).toFixed(0)}%) — worth a visual check`;
+    }
+
+    this.repEvents.push({
+      rep: this.reps, atSeconds: getRecSeconds(), mode,
+      bottomMetric: this.bottomMetricAtHit, lockoutAngle,
+      conf: this.bottomConfAtHit, flagged, reason,
+    });
+    this.bottomMetricAtHit = null; this.bottomConfAtHit = null;
+  }
+
+  updateCount(kp){
+    const mode = CFG.bottomMode();
+    if (mode === 'twist'){ this.updateCountTwist(kp); return; } // no leg/angle cycle involved at all — entirely separate logic below
+
+    // pick whichever side (left/right) is more confidently visible this frame
+    const sideScore = side => (kp[`${side}_hip`]?.score||0)+(kp[`${side}_knee`]?.score||0)+(kp[`${side}_ankle`]?.score||0);
+    const side = sideScore('left') >= sideScore('right') ? 'left' : 'right';
+    const hip = kp[`${side}_hip`], knee = kp[`${side}_knee`], ankle = kp[`${side}_ankle`];
+    const avgConf = (hip.score+knee.score+ankle.score)/3;
+
+    // track whichever wrist is more confident too — needed for floor-calibration mode
+    const wristSide = (kp.left_wrist?.score||0) >= (kp.right_wrist?.score||0) ? 'left' : 'right';
+    this.lastWrist = kp[`${wristSide}_wrist`];
+
+    if (avgConf < 0.35){
+      this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
+      this.phaseEl.textContent = 'tracking lost — repositioning needed';
+      this.phaseEl.classList.remove('hit');
+      return;
+    }
+    this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
+
+    if (!this.armed){
+      this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
+      return; // skeleton + confidence still show, but the rep state machine doesn't run yet
+    }
+    this.phaseEl.classList.remove('waiting');
+
+    const TOP = CFG.topAngle();
+    const angle = angleAt(hip, knee, ankle);
+    if (angle == null) return;
+
+    let bottomHit;
+    let bottomLabel;
+    let gap = null; // knee/wrist-to-reference px gap for lunge, rack, and burpee modes — hoisted so it's available below as the review-flag metric
+    if (mode === 'floor' || mode === 'burpee'){
+      // Burpee's "down" phase reuses exactly the same wrist-at-calibrated-floor-height
+      // check as the deadlift/snatch — hands touching the ground is the same physical
+      // fact as a weight touching the ground. Deliberately does NOT try to verify the
+      // box was actually cleared afterwards (see isOverheadLockout's sibling note below
+      // for why) — that stays the coach's NO REP call, same as everything else here.
+      if (this.floorRefY == null || this.lastWrist.score < 0.3){
+        this.phaseEl.textContent = this.floorRefY == null
+          ? 'not calibrated — hit "Calibrate Floor" with hands on the ground'
+          : 'tracking lost — repositioning needed';
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      const tol = CFG.floorTolerance();
+      bottomHit = this.lastWrist.y >= this.floorRefY - tol;
+      bottomLabel = mode === 'burpee' ? `hands at floor (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px)` : `weight at floor (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px)`;
+    } else if (mode === 'lunge'){
+      // No calibration step needed — the athlete's own ankle keypoint IS the
+      // ground reference every frame, unlike the barbell/floor case where the
+      // camera has no other way to know where the floor is. Track whichever
+      // leg is currently lower (closer to its own ankle) since that's the
+      // working leg for this rep — lunges alternate which leg drops.
+      const gapFor = s => {
+        const k = kp[`${s}_knee`], a = kp[`${s}_ankle`];
+        if (!k || !a || k.score < 0.3 || a.score < 0.3) return null;
+        return a.y - k.y; // shrinks toward 0 as that knee drops toward the ground
+      };
+      const gaps = [gapFor('left'), gapFor('right')].filter(g => g != null);
+      if (!gaps.length){
+        this.phaseEl.textContent = 'tracking lost — repositioning needed';
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      gap = Math.min(...gaps);
+      const tol = CFG.floorTolerance();
+      bottomHit = gap <= tol;
+      bottomLabel = `knee near ground (Δ${gap.toFixed(0)}px)`;
+    } else if (mode === 'rack'){
+      // Push Press's counted cycle is rack → overhead → back to rack, not a
+      // floor touch or a squat depth — "bottom" here means the wrist is back
+      // near shoulder height (racked), not overhead. No calibration needed:
+      // the shoulder keypoint is the live reference every frame.
+      //
+      // This is a DUMBBELL push press, done with a bell in each hand — so
+      // "racked" has to mean BOTH wrists back near BOTH shoulders, not just
+      // whichever single arm the code happens to be more confident about
+      // this frame. A single-arm reading would happily count a one-armed
+      // rep, which isn't a valid dumbbell push press. If either wrist isn't
+      // clearly visible, that's treated as "not confirmed yet" rather than
+      // silently falling back to one-arm tracking — same reasoning as the
+      // lockout check just below.
+      const rackGapFor = s => {
+        const w = kp[`${s}_wrist`], sh = kp[`${s}_shoulder`];
+        if (!w || !sh || w.score < 0.3 || sh.score < 0.3) return null;
+        return Math.abs(w.y - sh.y);
+      };
+      const leftGap = rackGapFor('left'), rightGap = rackGapFor('right');
+      if (leftGap == null || rightGap == null){
+        this.phaseEl.textContent = 'tracking lost — need both wrists visible for a dumbbell push press';
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      const tol = CFG.floorTolerance();
+      gap = Math.max(leftGap, rightGap); // the LESS-racked arm is what gates "both racked" — same logic as requiring both, just expressed as a single number for the review-flag margin check
+      bottomHit = leftGap <= tol && rightGap <= tol;
+      bottomLabel = `racked (Δ${gap.toFixed(0)}px from shoulder)`;
+    } else {
+      // 'angle' (squat) and 'wallball' share the same bottom check — a wall
+      // ball's validity at the bottom is body position (hip crease below
+      // knee), same as a goblet squat. What's different is the top — see
+      // the lockout check below.
+      bottomHit = angle < CFG.bottomAngle();
+      bottomLabel = `bottom reached (${angle.toFixed(0)}°)`;
+    }
+
+    if (!this.atBottom && bottomHit){
+      this._bottomHoldFrames++;
+      if (this._bottomHoldFrames < REP_CONFIRM_FRAMES){
+        this.phaseEl.textContent = `${bottomLabel} — confirming…`;
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      this._bottomHoldFrames = 0;
+      this.atBottom = true;
+      // Capture exactly what tripped "bottom" right now — this is what gets
+      // checked against the review margin once the rep completes at lockout.
+      this.bottomMetricAtHit = (mode === 'floor' || mode === 'burpee') ? (this.lastWrist.y - this.floorRefY)
+        : (mode === 'lunge' || mode === 'rack') ? gap : angle;
+      this.bottomConfAtHit = avgConf;
+      this.phaseEl.textContent = `${bottomLabel} — ascending…`;
+      this.phaseEl.classList.remove('hit');
+    } else if (!this.atBottom){
+      // A leaky-bucket reset, not a hard one: back off by one frame's worth
+      // of progress instead of wiping it entirely. A single stray frame of
+      // pose noise in the middle of a real, fast rep shouldn't cost the
+      // whole confirmation window — but sustained noise (nothing there at
+      // all) still decays back to zero within a couple of frames, same as
+      // before, since it never gets a chance to build back up.
+      this._bottomHoldFrames = Math.max(0, this._bottomHoldFrames - 1);
+    } else if (this.atBottom && angle > TOP){
+      // Standing tall alone doesn't prove the weight/ball made it overhead —
+      // Push Press and Wall Ball both need that checked explicitly, same
+      // helper as the opt-in DB Snatch check, just mandatory here instead of
+      // a toggle since there's no valid version of either rep without it.
+      const overheadRequired = (mode === 'floor' && CFG.requireOverhead()) || mode === 'rack' || mode === 'wallball';
+      if (overheadRequired){
+        let overheadFail;
+        if (mode === 'rack'){
+          // Dumbbell push press: both arms must INDEPENDENTLY confirm
+          // overhead lockout. Unlike the single-arm modes below, an arm we
+          // can't currently see does NOT get the benefit of the doubt here
+          // — silently falling back to whichever one arm is visible is
+          // exactly the single-arm tracking this bilateral check exists to
+          // rule out, since a genuine two-dumbbell rep needs both arms
+          // doing the work, not just the one the camera happens to see best.
+          const left = isOverheadLockout(kp, 'left');
+          const right = isOverheadLockout(kp, 'right');
+          overheadFail = !(left === true && right === true);
+        } else {
+          // Wall Ball / opt-in DB Snatch: single-arm by nature (DB Snatch is
+          // ONE arm, deliberately), so an unreadable arm still gets the
+          // usual benefit of the doubt rather than blocking the rep.
+          overheadFail = isOverheadLockout(kp, wristSide) === false;
+        }
+        if (overheadFail){
+          this._topHoldFrames = Math.max(0, this._topHoldFrames - 1); // leaky, same reasoning as the bottom-side reset above
+          this.phaseEl.textContent = mode === 'rack'
+            ? `standing (${angle.toFixed(0)}°) — need both arms locked out overhead`
+            : `standing (${angle.toFixed(0)}°) — not overhead yet`;
+          this.phaseEl.classList.remove('hit');
+          return;
+        }
+      }
+      this._topHoldFrames++;
+      if (this._topHoldFrames < REP_CONFIRM_FRAMES){
+        this.phaseEl.textContent = `lockout at ${angle.toFixed(0)}° — confirming…`;
+        this.phaseEl.classList.remove('hit');
+        return;
+      }
+      this._topHoldFrames = 0;
+      this.atBottom = false;
+      this.reps += 1;
+      this.countEl.textContent = this.reps;
+      this.phaseEl.textContent = `REP COUNTED — lockout at ${angle.toFixed(0)}°`;
+      this.phaseEl.classList.add('hit');
+      this.logRepEvent({ lockoutAngle: angle, mode });
+      this.syncCount();
+    } else if (this.atBottom){
+      this._topHoldFrames = Math.max(0, this._topHoldFrames - 1);
+      this.phaseEl.textContent = `ascending (${angle.toFixed(0)}°)`;
+      this.phaseEl.classList.remove('hit');
+    } else if (angle < TOP){
+      this.phaseEl.textContent = mode === 'floor' ? `lifting…` : `descending (${angle.toFixed(0)}°)`;
+      this.phaseEl.classList.remove('hit');
+    } else {
+      this.phaseEl.textContent = `standing / locked out (${angle.toFixed(0)}°)`;
+      this.phaseEl.classList.remove('hit');
+    }
+  }
+
+  // Russian Twist has no depth/lockout cycle at all — it's a seated,
+  // side-to-side rotation. What counts is the hand/weight crossing from one
+  // side of the body to the other, so this tracks the wrist's horizontal
+  // position against the midline between the hips, with a dead zone around
+  // the midline so small jitter near centre doesn't register as a crossing.
+  updateCountTwist(kp){
+    const wristSide = (kp.left_wrist?.score||0) >= (kp.right_wrist?.score||0) ? 'left' : 'right';
+    const wrist = kp[`${wristSide}_wrist`];
+    const lh = kp.left_hip, rh = kp.right_hip;
+    if (!wrist || wrist.score < 0.3 || !lh || !rh || lh.score < 0.3 || rh.score < 0.3){
+      this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
+      this.phaseEl.textContent = 'tracking lost — repositioning needed';
+      this.phaseEl.classList.remove('hit');
+      return;
+    }
+    this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
+
+    if (!this.armed){
+      this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
+      return;
+    }
+    this.phaseEl.classList.remove('waiting');
+
+    const midlineX = (lh.x + rh.x) / 2;
+    const margin = CFG.floorTolerance(); // reused here as the crossing margin, in px, either side of the midline
+    let touchedSide = null;
+    if (wrist.x < midlineX - margin) touchedSide = 'left';
+    else if (wrist.x > midlineX + margin) touchedSide = 'right';
+    // else: in the dead zone near the midline — ambiguous, don't update anything off it
+
+    if (touchedSide && touchedSide !== this.twistSide){
+      if (this.twistSide != null){ // the very first touch just establishes a starting side — only an actual crossing FROM a known side counts
+        this.reps += 1;
+        this.countEl.textContent = this.reps;
+        this.bottomMetricAtHit = Math.abs(wrist.x - midlineX);
+        this.bottomConfAtHit = Math.min(wrist.score, lh.score, rh.score);
+        this.phaseEl.textContent = `REP COUNTED — touched ${touchedSide}`;
+        this.phaseEl.classList.add('hit');
+        this.logRepEvent({ lockoutAngle: null, mode: 'twist' });
+        this.syncCount();
+      }
+      this.twistSide = touchedSide;
+    } else if (touchedSide){
+      this.phaseEl.textContent = `holding ${touchedSide} — twist to the other side to count`;
+      this.phaseEl.classList.remove('hit');
+    } else {
+      this.phaseEl.textContent = 'centre — twist to either side';
+      this.phaseEl.classList.remove('hit');
+    }
+  }
+}
+
+let detector, video, running = false, cameraStream = null;
+const laneA = new Lane(document.querySelector('[data-lane=A]'));
+const laneB = new Lane(document.querySelector('[data-lane=B]'));
+laneA.crop = 'left'; laneB.crop = 'right';
+
+// ---- Live scoring: wires this counter into the same result endpoint the
+// judge's Live Counter phone screen uses, so a rep counted here shows up in
+// the running scoreboard (judge screen, Watch Live, Cast Display) immediately
+// instead of being re-entered by hand later. Fully optional — with no
+// Fixture ID/category connected, this page just runs as a local counter. ----
+const LIVE = { connected: false, fixtureId: null, category: null, exerciseId: null };
+const liveStatusEl = document.getElementById('liveSyncStatus');
+const exerciseSelectEl = document.getElementById('exerciseSelect');
+
+// prefill from a deep link, e.g. wedgetail.html?fixture=12&category=mixed_doubles
+// &embed=1 additionally switches to a compact layout (for hosting inside an
+// iframe on the judge's live scoring page) and auto-connects live scoring
+// immediately, rather than making the judge type the Fixture ID in by hand.
+(function prefillFromQuery(){
+  const q = new URLSearchParams(location.search);
+  if (q.get('fixture')) document.getElementById('fixtureId').value = q.get('fixture');
+  if (q.get('category')) document.getElementById('categorySelect').value = q.get('category');
+  if (q.get('embed') === '1'){
+    document.body.classList.add('embed');
+    if (q.get('fixture') && q.get('category')) connectLiveScoring();
+  }
+})();
+
+async function connectLiveScoring(){
+  const fixtureId = parseInt(document.getElementById('fixtureId').value);
+  const category = document.getElementById('categorySelect').value;
+  if (!fixtureId){ liveStatusEl.textContent = 'enter a Fixture ID first'; liveStatusEl.style.color = 'var(--danger)'; return; }
+  try {
+    const res = await fetch(`/api/judge/fixture/${fixtureId}/category/${category}/context`);
+    if (!res.ok) {
+      liveStatusEl.textContent = res.status === 403
+        ? "not connected — you're not assigned to judge this category"
+        : 'not connected — could not reach the fixture';
+      liveStatusEl.style.color = 'var(--danger)';
+      LIVE.connected = false;
+      return;
+    }
+    const ctx = await res.json();
+    LIVE.connected = true;
+    LIVE.fixtureId = ctx.fixture_id;
+    LIVE.category = ctx.category;
+    laneA.teamId = ctx.team_a.id;
+    laneB.teamId = ctx.team_b.id;
+    document.querySelector('[data-lane=A] [data-role=tag]').textContent = ctx.team_a.name;
+    document.querySelector('[data-lane=B] [data-role=tag]').textContent = ctx.team_b.name;
+
+    exerciseSelectEl.innerHTML = ctx.exercises.map(e => `<option value="${e.id}">Gate ${e.gate_number}: ${e.name}</option>`).join('');
+    const q = new URLSearchParams(location.search);
+    const deepLinkExId = parseInt(q.get('exercise'));
+    const chosen = ctx.exercises.find(e => e.id === deepLinkExId) || ctx.exercises[0];
+    if (chosen) {
+      LIVE.exerciseId = chosen.id;
+      exerciseSelectEl.value = chosen.id;
+      document.getElementById('exerciseName').value = chosen.name;
+    }
+    if (q.get('mode')) {
+      document.getElementById('bottomMode').value = q.get('mode');
+      document.getElementById('bottomMode').dispatchEvent(new Event('change')); // reuse the existing show/hide logic for the right fields
+    }
+    if (q.get('overhead') === '1') {
+      document.getElementById('requireOverhead').checked = true;
+    }
+    liveStatusEl.textContent = `connected — writing live to Fixture ${ctx.fixture_id}`;
+    liveStatusEl.style.color = 'var(--lime)';
+  } catch (e) {
+    liveStatusEl.textContent = 'not connected — network error';
+    liveStatusEl.style.color = 'var(--danger)';
+    LIVE.connected = false;
+  }
+}
+document.getElementById('connectBtn').addEventListener('click', connectLiveScoring);
+// Safety net: re-push both lanes' current counts periodically in case a tap's
+// own sync was dropped by a bad connection — same "retry anything stuck"
+// pattern the Live Counter screen uses.
+setInterval(() => { laneA.syncCount(); laneB.syncCount(); }, 5000);
+exerciseSelectEl.addEventListener('change', () => {
+  LIVE.exerciseId = parseInt(exerciseSelectEl.value) || null;
+  const opt = exerciseSelectEl.selectedOptions[0];
+  if (opt) document.getElementById('exerciseName').value = opt.textContent.replace(/^Gate \d+: /, '');
+});
+
+// ---- Recording: two INDEPENDENT per-lane recordings, from GO to Reset, uploaded for coach review ----
+// Deliberately two separate clips, not one combined split-screen video: the
+// two lanes are very often two different gyms' athletes competing side by
+// side, and a shared clip would mean each gym's coach could see (and a
+// recordings list scoped to "your team" would even serve up) footage of the
+// OTHER gym's athlete too. Splitting per lane means each upload only ever
+// carries that lane's own view and its own rep log — nothing about the
+// neighbouring lane leaks into it, whichever lane it is.
+function makeRecorderState(lane){ return { mediaRecorder: null, chunks: [], recStartPerf: null, lane }; }
+const recA = makeRecorderState(laneA);
+const recB = makeRecorderState(laneB);
+const recStatusEl = document.getElementById('recStatus');
+
+function getRecSeconds(r){ return r.mediaRecorder && r.mediaRecorder.state === 'recording' ? (performance.now() - r.recStartPerf) / 1000 : 0; }
+
+function pickMimeType(){
+  for (const t of ['video/webm;codecs=vp9', 'video/webm;codecs=vp8', 'video/webm']) {
+    if (MediaRecorder.isTypeSupported(t)) return t;
+  }
+  return '';
+}
+
+function startRecorderFor(r){
+  if (!cameraStream || (r.mediaRecorder && r.mediaRecorder.state === 'recording')) return;
+  const mimeType = pickMimeType();
+  // Each lane records straight off its OWN canvas — which already has that
+  // lane's cropped video frame plus its own skeleton overlay drawn onto it
+  // every frame (see drawSkeleton) — so lane A's clip only ever shows lane
+  // A's view (whatever that is, including e.g. its own zoom/tracking
+  // quirks) and never bleeds into lane B's, or vice versa.
+  const recStream = r.lane.canvas.captureStream(30);
+  r.mediaRecorder = new MediaRecorder(recStream, mimeType ? { mimeType } : undefined);
+  r.chunks = [];
+  r.mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) r.chunks.push(e.data); };
+  r.mediaRecorder.start(1000); // gather in 1s chunks so a crash mid-set doesn't lose the whole clip
+  r.recStartPerf = performance.now();
+}
+
+function startRecording(){
+  try {
+    activeRecordingMeta = {
+      exerciseName: document.getElementById('exerciseName').value || 'Exercise',
+      mode: CFG.bottomMode(),
+    };
+    startRecorderFor(recA);
+    startRecorderFor(recB);
+    recStatusEl.textContent = '● recording (2 lanes)';
+    recStatusEl.style.color = 'var(--danger)';
+  } catch (e) {
+    console.error('Wedgetail: could not start recording', e);
+    recStatusEl.textContent = 'recording unavailable';
+  }
+}
+
+// Stops one lane's recorder and uploads it as its own independent recording
+// — its own label, its own rep log only, nothing about the other lane
+// included. Never throws, so a bad connection or a rejected upload on one
+// lane never blocks Reset or the other lane's own upload.
+async function stopAndUploadOne(r, exerciseName, mode){
+  if (!r.mediaRecorder || r.mediaRecorder.state === 'inactive') return { ok: false, reason: 'not recording' };
+  const duration = getRecSeconds(r);
+  const finished = new Promise(resolve => { r.mediaRecorder.onstop = resolve; });
+  r.mediaRecorder.stop();
+  await finished;
+
+  const mimeType = r.mediaRecorder.mimeType || 'video/webm';
+  const blob = new Blob(r.chunks, { type: mimeType });
+  r.chunks = [];
+  r.mediaRecorder = null;
+
+  if (blob.size === 0) return { ok: false, reason: 'empty clip' };
+
+  const repLog = r.lane.repEvents.map(ev => ({ lane: r.lane.label || '', ...ev }));
+  const reviewFlags = repLog.filter(ev => ev.flagged).map(ev => ({ lane: ev.lane, rep: ev.rep, atSeconds: ev.atSeconds, reason: ev.reason }));
+
+  const form = new FormData();
+  form.append('video', blob, 'clip.webm');
+  form.append('exercise_name', exerciseName);
+  form.append('mode', mode);
+  form.append('lane_label', r.lane.label || '');
+  form.append('duration_sec', String(duration));
+  form.append('rep_log', JSON.stringify(repLog));
+  form.append('review_flags', JSON.stringify(reviewFlags));
+
+  try {
+    const res = await fetch('/api/wedgetail/recordings', { method: 'POST', body: form });
+    const data = await res.json();
+    if (data.ok && data.stored) return { ok: true, flagCount: data.flagCount };
+    return { ok: false, reason: data.reason || data.error || 'unknown error' };
+  } catch (e) {
+    console.error('Wedgetail: recording upload failed', e);
+    return { ok: false, reason: 'upload failed' };
+  }
+}
+
+// Snapshot of which exercise/mode is actually being recorded right now —
+// captured once at GO time, not re-read live at save time. This matters
+// because by the time a clip gets auto-finalized (see goBtn handler below),
+// the judge has usually already switched the dropdown to the NEXT
+// exercise — reading it live at save time would tag the previous exercise's
+// clip with the next exercise's name.
+let activeRecordingMeta = null;
+
+async function stopAndUploadRecording(){
+  if (!activeRecordingMeta) return;
+  const { exerciseName, mode } = activeRecordingMeta;
+  activeRecordingMeta = null;
+  recStatusEl.textContent = 'saving clips…';
+  recStatusEl.style.color = 'var(--amber)';
+
+  const [resultA, resultB] = await Promise.all([
+    stopAndUploadOne(recA, exerciseName, mode),
+    stopAndUploadOne(recB, exerciseName, mode),
+  ]);
+
+  const label = (r, res) => `${r.lane.label || 'Lane'}: ${res.ok ? `saved ✓ (${res.flagCount} flagged)` : `not saved (${res.reason})`}`;
+  recStatusEl.textContent = `${label(recA, resultA)} · ${label(recB, resultB)}`;
+  recStatusEl.style.color = (resultA.ok && resultB.ok) ? 'var(--lime)' : 'var(--slate)';
+}
+
+// "Reset for Next Station" stays available for the last exercise of a
+// session (no following GO to auto-trigger a save) or to abort a station
+// early — but it's no longer the ONLY way a clip gets saved, see goBtn below.
+document.getElementById('resetBtn').addEventListener('click', async () => {
+  await stopAndUploadRecording();
+  laneA.reset(); laneB.reset();
+});
+
+// Remember whatever thresholds were last used on THIS device/browser, so a
+// judge who finds better numbers doesn't have to re-enter them next test —
+// and Declan doesn't need to ship a new default just to make it stick.
+// (Real hosted page, not a Claude artifact sandbox — localStorage is fine here.)
+const REMEMBERED_FIELDS = ['exerciseName','bottomMode','bottomAngle','topAngle','floorTolerance'];
+for (const id of REMEMBERED_FIELDS) {
+  const saved = localStorage.getItem('wedgetail_' + id);
+  if (saved !== null) document.getElementById(id).value = saved;
+  document.getElementById(id).addEventListener('change', (e) => {
+    localStorage.setItem('wedgetail_' + id, e.target.value);
+  });
+}
+{
+  const cb = document.getElementById('requireOverhead');
+  const saved = localStorage.getItem('wedgetail_requireOverhead');
+  if (saved !== null) cb.checked = (saved === 'true');
+  cb.addEventListener('change', () => localStorage.setItem('wedgetail_requireOverhead', cb.checked));
+}
+
+document.getElementById('goBtn').addEventListener('click', async () => {
+  // If a clip from the PREVIOUS exercise is still recording, this GO means
+  // the judge has already moved on to the next station — auto-finalize and
+  // upload that previous clip and clear counts now, rather than requiring a
+  // separate manual Reset click just to make the last exercise's clip save.
+  // Reset is still there for the final exercise of a session, or to bail
+  // out of a station early.
+  if (activeRecordingMeta) {
+    await stopAndUploadRecording();
+    laneA.reset(); laneB.reset();
+  }
+  // Both lanes arm together — mirrors a synchronised start, not one athlete
+  // getting a head start on the other. Recording starts at the same moment,
+  // so the clip covers exactly the window reps can be counted in.
+  laneA.armed = true; laneB.armed = true;
+  startRecording();
+});
+
+// Which UI fields each counting mode needs — one place to keep this
+// consistent, now that there are 7 modes instead of the original 2.
+const TOLERANCE_LABELS = {
+  floor: 'Ground tolerance (px)', lunge: 'Ground tolerance (px)', burpee: 'Ground tolerance (px)',
+  rack: 'Rack-height tolerance (px)', twist: 'Crossing margin (px)',
+};
+function updateModeUI(mode){
+  const needsAngle = mode === 'angle' || mode === 'wallball';
+  const needsTol = ['floor','lunge','rack','twist','burpee'].includes(mode);
+  const needsCalibrate = mode === 'floor' || mode === 'burpee'; // both need a one-time "wrist at floor" calibration
+  const needsOverheadToggle = mode === 'floor'; // opt-in for DB Snatch specifically — rack/wallball require it unconditionally, built into their own logic
+  document.getElementById('bottomAngleField').style.display = needsAngle ? 'flex' : 'none';
+  document.getElementById('floorToleranceField').style.display = needsTol ? 'flex' : 'none';
+  if (needsTol) document.querySelector('#floorToleranceField label').textContent = TOLERANCE_LABELS[mode] || 'Tolerance (px)';
+  document.getElementById('calibrateBtn').style.display = needsCalibrate ? 'inline-block' : 'none';
+  document.getElementById('requireOverheadField').style.display = needsOverheadToggle ? 'flex' : 'none';
+  laneA.floorRefY = null; laneB.floorRefY = null; // switching modes invalidates any old calibration
+}
+document.getElementById('bottomMode').addEventListener('change', (e) => updateModeUI(e.target.value));
+updateModeUI(document.getElementById('bottomMode').value); // apply once on load — matters if a remembered value restored something other than 'angle'
+
+document.getElementById('calibrateBtn').addEventListener('click', () => {
+  laneA.calibrate(); laneB.calibrate();
+});
+
+async function populateCameras(){
+  try {
+    const devices = await navigator.mediaDevices.enumerateDevices();
+    const sel = document.getElementById('cameraSelect');
+    devices.filter(d => d.kind === 'videoinput').forEach(d => {
+      const opt = document.createElement('option');
+      opt.value = d.deviceId; opt.textContent = d.label || 'Camera';
+      sel.appendChild(opt);
+    });
+  } catch(e){ /* permission not granted yet — fine, default camera still works */ }
+}
+populateCameras();
+
+document.getElementById('startBtn').addEventListener('click', async () => {
+  const btn = document.getElementById('startBtn');
+  btn.disabled = true; btn.textContent = 'Setting up…';
+  try {
+    await tf.setBackend('webgl');
+    // This step downloads the actual tracking model over the network (a few
+    // MB) — it's a real fetch, not a hang. Slower on mobile data or a
+    // congested venue WiFi than on a fast home/office connection.
+    btn.textContent = 'Downloading tracking model…';
+    detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
+      modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+    });
+
+    btn.textContent = 'Starting camera…';
+    const deviceId = document.getElementById('cameraSelect').value;
+    const constraints = { video: deviceId ? {deviceId:{exact:deviceId}} : {facingMode:'environment'}, audio:false };
+    const stream = await navigator.mediaDevices.getUserMedia(constraints);
+    cameraStream = stream;
+    video = document.createElement('video');
+    video.srcObject = stream; video.playsInline = true; await video.play();
+
+    btn.textContent = 'Running'; running = true;
+    document.getElementById('goBtn').style.display = 'inline-block';
+    document.getElementById('goBtn').disabled = false;
+    loop();
+  } catch (e){
+    let hint;
+    if (location.protocol === 'file:') {
+      hint = 'You opened this as a local file — most browsers block camera access from file:// pages. ' +
+        'Try running it from a local server instead (e.g. "python3 -m http.server" in its folder, then open http://localhost:8000/), ' +
+        'or just use the hosted version at gymleagueglobal.com.au/wedgetail.html.';
+    } else if (/tf is not defined|poseDetection is not defined/i.test(e.message)) {
+      hint = 'The tracking library didn\'t load — usually a blocked or slow connection to cdn.jsdelivr.net. ' +
+        'Check your connection and reload. If it keeps happening on this network, try a different WiFi or mobile data.';
+    } else if (e.name === 'NotAllowedError') {
+      hint = 'Camera permission was denied. Check your browser\'s site settings and allow camera access for this page, then reload.';
+    } else {
+      hint = 'Reload the page and try again. If it keeps failing, note the exact error above.';
+    }
+    alert('Camera/model failed to start: ' + e.message + '\n\n' + hint);
+    btn.disabled = false; btn.textContent = 'Start Camera';
+  }
+});
+
+let consecutiveErrors = 0;
+
+async function loop(){
+  if (!running) return;
+  try {
+    // Sequential, not Promise.all — both lanes were calling estimatePoses()
+    // on the SAME detector at the same moment, which TF.js's WebGL backend
+    // does not guarantee is safe. That race was the likely cause of the
+    // freeze: one bad concurrent call throwing with nothing to catch it,
+    // silently killing the requestAnimationFrame chain for good.
+    await laneA.detect(detector, video);
+    await laneB.detect(detector, video);
+    consecutiveErrors = 0;
+  } catch (e) {
+    // Any single bad frame — WebGL hiccup, camera glitch, anything — now
+    // just skips that frame instead of freezing forever. The loop always
+    // keeps going.
+    consecutiveErrors++;
+    console.error('Wedgetail: frame skipped after an error', e);
+    if (consecutiveErrors === 5) {
+      laneA.phaseEl.textContent = laneB.phaseEl.textContent =
+        '⚠ repeated tracking errors — if this continues, reload the page';
+    }
+  }
+  requestAnimationFrame(loop);
+}
+</script>
+</body>
+</html>
