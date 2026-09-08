@@ -9,7 +9,7 @@
   <div class="dash-main">
     <div class="section-eyebrow">Wedgetail Recording</div>
     <h2><%= rec.exercise_name %> — <%= rec.lane_label || ((rec.lane_a_label || 'Lane A') + ' / ' + (rec.lane_b_label || 'Lane B')) %></h2>
-    <p style="color:var(--muted);margin-top:.3rem;"><%= new Date(rec.created_at).toLocaleString() %></p>
+    <p style="color:var(--muted);margin-top:.3rem;"><%= new Date(rec.created_at).toLocaleString('en-AU', { timeZone: 'Australia/Sydney', dateStyle: 'medium', timeStyle: 'short' }) %></p>
 
     <% if (!playbackUrl) { %>
       <div class="form-error" style="margin-top:1rem;">Video isn't available (storage may not be configured).</div>
@@ -31,7 +31,7 @@
             <td><%= f.rep %></td>
             <td><%= Math.floor(f.atSeconds / 60) %>:<%= String(Math.round(f.atSeconds % 60)).padStart(2,'0') %></td>
             <td><%= f.reason %></td>
-            <td><% if (playbackUrl) { %><button class="btn btn-outline btn-sm" onclick="seekTo(<%= f.atSeconds %>)">Jump</button><% } %></td>
+            <td><% if (playbackUrl) { %><button class="btn btn-outline btn-sm" style="border-color:var(--forest);color:var(--forest);" onclick="seekTo(<%= f.atSeconds %>)">Jump</button><% } %></td>
           </tr>
         <% }) %>
       </table>

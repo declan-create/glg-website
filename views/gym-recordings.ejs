@@ -23,12 +23,12 @@
         <% } %>
         <% recordings.forEach(r => { %>
           <tr>
-            <td><%= new Date(r.created_at).toLocaleString() %></td>
+            <td><%= new Date(r.created_at).toLocaleString('en-AU', { timeZone: 'Australia/Sydney', dateStyle: 'medium', timeStyle: 'short' }) %></td>
             <td><%= r.exercise_name %></td>
             <td><%= r.lane_label || ((r.lane_a_label || '—') + ' / ' + (r.lane_b_label || '—')) %></td>
             <td><%= r.duration_sec ? Math.round(r.duration_sec) + 's' : '—' %></td>
             <td><%= r.reviewFlagsParsed.length %></td>
-            <td><a href="/gym/recordings/<%= r.id %>" class="btn btn-outline btn-sm">Watch</a></td>
+            <td><a href="/gym/recordings/<%= r.id %>" class="btn btn-outline btn-sm" style="border-color:var(--forest);color:var(--forest);">Watch</a></td>
           </tr>
         <% }) %>
       </table>

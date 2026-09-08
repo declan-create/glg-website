@@ -98,8 +98,8 @@
   const INITIAL = <%- JSON.stringify(resultMap) %>;
   const INITIAL_G4 = <%- JSON.stringify(g4Map) %>;
 
-  const OFFSET_SEC = CAT_INDEX * 5 * 60;
-  const STAGE_SEC = 5 * 60;
+  const STAGE_SEC = 4 * 60; // exercises are 4-minute stations — must match cast.ejs/watch.ejs, which already use this
+  const OFFSET_SEC = CAT_INDEX * STAGE_SEC;
   const timed = EXERCISES.filter(e => !e.is_sprint_finish);   // 9 exercises, in event order
   const sprintExs = EXERCISES.filter(e => e.is_sprint_finish);
   const GATES123_SEC = timed.length * STAGE_SEC;
