@@ -99,29 +99,26 @@
     <label>Bottom-check mode</label>
     <select id="bottomMode">
       <option value="angle">Joint angle (squat depth)</option>
-      <option value="floor">Weight-to-floor (calibrated — deadlift / snatch)</option>
+      <option value="floor_deadlift">Weight-to-floor (Trap Bar Deadlift)</option>
+      <option value="floor_snatch">Weight-to-floor + overhead (DB Snatch)</option>
       <option value="lunge">Knee-to-ground (standing lunge)</option>
       <option value="rack">Rack-to-overhead (push press)</option>
       <option value="wallball">Squat-to-overhead (wall ball)</option>
       <option value="twist">Side-to-side crossing (Russian twist)</option>
-      <option value="burpee">Hands-to-floor + stand (burpee box jump-over)</option>
+      <option value="burpee">Flat-to-standing (burpee box jump-over — box clearance judged manually)</option>
     </select>
   </div>
   <div class="field" id="bottomAngleField">
     <label>Bottom angle (° at knee)</label>
-    <input id="bottomAngle" type="number" value="135" min="60" max="160" />
+    <input id="bottomAngle" type="number" value="115" min="60" max="160" />
   </div>
   <div class="field" id="floorToleranceField" style="display:none;">
     <label>Ground tolerance (px)</label>
     <input id="floorTolerance" type="number" value="45" min="5" max="80" />
   </div>
-  <div class="field" id="requireOverheadField" style="display:none;">
-    <label>Overhead lockout (DB Snatch)</label>
-    <input id="requireOverhead" type="checkbox" style="width:1.3rem;height:1.3rem;" />
-  </div>
   <div class="field">
     <label>Lockout angle (° at knee)</label>
-    <input id="topAngle" type="number" value="150" min="120" max="180" />
+    <input id="topAngle" type="number" value="163" min="120" max="180" />
   </div>
   <div class="field">
     <label>Camera</label>
@@ -230,7 +227,6 @@ const CFG = {
   topAngle: () => parseFloat(document.getElementById('topAngle').value),
   bottomMode: () => document.getElementById('bottomMode').value,
   floorTolerance: () => parseFloat(document.getElementById('floorTolerance').value),
-  requireOverhead: () => document.getElementById('requireOverhead').checked,
 };
 
 const CONNECTIONS = [
@@ -277,8 +273,23 @@ const OVERHEAD_ELBOW_MIN = 150;  // degrees — how straight the arm needs to be
 // pretending to be a real down-and-up cycle, not against a picture entirely.
 // A few consecutive frames is a small delay (well under a fifth of a second
 // at typical frame rates) that a genuine rep clears easily, but a
-// single-frame jitter spike can't.
+// single-frame jitter spike can't. Progress toward this decays by one frame
+// rather than resetting to zero the instant the condition drops for even
+// one frame — a real, fast rep can have an isolated noisy frame in the
+// middle of an otherwise clean hold without losing all its progress, while
+// sustained noise (nothing genuinely there) still can't outrun the decay.
 const REP_CONFIRM_FRAMES = 3;
+// How long a body has to be continuously, confidently tracked before the rep
+// counter is allowed to run at all — closes the "must only lock onto a
+// person, not a random obstacle" gap. Without this, the very first frame
+// anything scores above the confidence threshold (a passerby, camera
+// settling on the wrong subject, a brief false detection) could immediately
+// start counting reps. This doesn't require the SAME identity throughout
+// (this build has no re-identification — that's a real limit worth knowing
+// about, not just tuning around), only that tracking has been unbroken and
+// confident for this long, which is enough to filter out momentary/transient
+// detections without adding a delay athletes would ever notice.
+const LOCK_ON_MS = 700;
 function isOverheadLockout(kp, armSide){
   const wrist = kp[`${armSide}_wrist`], elbow = kp[`${armSide}_elbow`], shoulder = kp[`${armSide}_shoulder`];
   if (!wrist || !elbow || !shoulder || wrist.score < 0.3 || elbow.score < 0.3 || shoulder.score < 0.3) return null; // can't see the arm clearly — see call site for how this is handled
@@ -316,6 +327,7 @@ class Lane {
     this._syncTimer = null; // debounce handle for syncCount()
     this._bottomHoldFrames = 0; // consecutive frames the bottom condition has held — see REP_CONFIRM_FRAMES
     this._topHoldFrames = 0;    // consecutive frames the lockout/standing condition has held
+    this.trackLockStart = null; // when confident, unbroken tracking most recently began — see LOCK_ON_MS
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
@@ -350,7 +362,7 @@ class Lane {
     }, 250);
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this.trackLockStart = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
 
   // Grabs this lane's half of the shared video — but rather than a rigid
   // static crop, each lane maintains its own "view window" that smoothly
@@ -542,7 +554,7 @@ class Lane {
     const LOW_CONF_THRESHOLD = 0.5; // below this, trust the video review over the live call
 
     let flagged = false, reason = null;
-    if (mode === 'floor' || mode === 'burpee') {
+    if ((mode === 'floor_deadlift' || mode === 'floor_snatch' || mode === 'burpee') && this.floorRefY != null) {
       const tol = CFG.floorTolerance();
       const marginFromLine = this.bottomMetricAtHit - (-tol); // how far past the tolerance line it was, in px
       if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `${mode === 'burpee' ? 'hands' : 'weight'} only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
@@ -589,14 +601,21 @@ class Lane {
       this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
       this.phaseEl.textContent = 'tracking lost — repositioning needed';
       this.phaseEl.classList.remove('hit');
+      this.trackLockStart = null; // tracking broke — any resumed detection has to re-earn its lock-on
       return;
     }
     this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
+    if (this.trackLockStart == null) this.trackLockStart = performance.now();
 
     if (!this.armed){
       this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
       this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
       return; // skeleton + confidence still show, but the rep state machine doesn't run yet
+    }
+    if (performance.now() - this.trackLockStart < LOCK_ON_MS){
+      this.phaseEl.textContent = 'locking on…';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.remove('waiting');
+      return; // confidently tracking SOMETHING, but not for long enough yet to trust it's the athlete
     }
     this.phaseEl.classList.remove('waiting');
 
@@ -607,22 +626,35 @@ class Lane {
     let bottomHit;
     let bottomLabel;
     let gap = null; // knee/wrist-to-reference px gap for lunge, rack, and burpee modes — hoisted so it's available below as the review-flag metric
-    if (mode === 'floor' || mode === 'burpee'){
-      // Burpee's "down" phase reuses exactly the same wrist-at-calibrated-floor-height
-      // check as the deadlift/snatch — hands touching the ground is the same physical
-      // fact as a weight touching the ground. Deliberately does NOT try to verify the
-      // box was actually cleared afterwards (see isOverheadLockout's sibling note below
-      // for why) — that stays the coach's NO REP call, same as everything else here.
-      if (this.floorRefY == null || this.lastWrist.score < 0.3){
-        this.phaseEl.textContent = this.floorRefY == null
-          ? 'not calibrated — hit "Calibrate Floor" with hands on the ground'
-          : 'tracking lost — repositioning needed';
+    if (mode === 'floor_deadlift' || mode === 'floor_snatch' || mode === 'burpee'){
+      // Both a calibrated floor-height check AND a genuine knee-bend depth
+      // check are required together now — previously this ran on the
+      // wrist-height signal ALONE, and ordinary arm sway while just
+      // standing still is enough noise to drift across a floor tolerance on
+      // its own (that's what caused "counted random reps of a person just
+      // standing in the camera"). Requiring both to agree closes that gap
+      // the same way the Push Press fix did.
+      //
+      // If no calibration has been done yet, this still works via knee
+      // depth alone rather than refusing to track anything — a judge
+      // forgetting the one-time "Calibrate Floor" step used to mean this
+      // mode did nothing at all ("no tracking"). Calibrating still adds the
+      // extra, more precise floor-touch signal on top when it's done.
+      if (this.lastWrist.score < 0.3){
+        this.phaseEl.textContent = 'tracking lost — repositioning needed';
         this.phaseEl.classList.remove('hit');
         return;
       }
-      const tol = CFG.floorTolerance();
-      bottomHit = this.lastWrist.y >= this.floorRefY - tol;
-      bottomLabel = mode === 'burpee' ? `hands at floor (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px)` : `weight at floor (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px)`;
+      const kneeBent = angle < CFG.bottomAngle();
+      if (this.floorRefY == null){
+        bottomHit = kneeBent;
+        bottomLabel = `depth reached — not floor-calibrated (${angle.toFixed(0)}°)`;
+      } else {
+        const tol = CFG.floorTolerance();
+        const wristAtFloor = this.lastWrist.y >= this.floorRefY - tol;
+        bottomHit = wristAtFloor && kneeBent;
+        bottomLabel = `${mode === 'burpee' ? 'hands' : 'weight'} at floor + knees bent (Δ${(this.lastWrist.y - this.floorRefY).toFixed(0)}px, ${angle.toFixed(0)}°)`;
+      }
     } else if (mode === 'lunge'){
       // No calibration step needed — the athlete's own ankle keypoint IS the
       // ground reference every frame, unlike the barbell/floor case where the
@@ -634,31 +666,57 @@ class Lane {
         if (!k || !a || k.score < 0.3 || a.score < 0.3) return null;
         return a.y - k.y; // shrinks toward 0 as that knee drops toward the ground
       };
-      const gaps = [gapFor('left'), gapFor('right')].filter(g => g != null);
-      if (!gaps.length){
+      const legs = ['left','right'].map(s => ({ side: s, gap: gapFor(s) })).filter(l => l.gap != null);
+      if (!legs.length){
         this.phaseEl.textContent = 'tracking lost — repositioning needed';
         this.phaseEl.classList.remove('hit');
         return;
       }
-      gap = Math.min(...gaps);
+      const working = legs.reduce((a,b) => a.gap <= b.gap ? a : b);
+      gap = working.gap;
       const tol = CFG.floorTolerance();
-      bottomHit = gap <= tol;
-      bottomLabel = `knee near ground (Δ${gap.toFixed(0)}px)`;
+      // Depth corroboration on the SAME working leg: the knee-to-ankle pixel
+      // gap alone can't tell a real lunge apart from just walking or
+      // stepping around in frame, since a normal walking stride briefly
+      // produces a small gap too. Requiring that leg's own hip-knee-ankle
+      // angle also show real bend (not just a shin-length coincidence) is a
+      // second, independent signal walking doesn't reliably produce —
+      // walking keeps the trailing leg relatively straight, a lunge doesn't.
+      const workingHip = kp[`${working.side}_hip`], workingKnee = kp[`${working.side}_knee`], workingAnkle = kp[`${working.side}_ankle`];
+      const workingAngle = (workingHip?.score >= 0.3 && workingKnee?.score >= 0.3 && workingAnkle?.score >= 0.3)
+        ? angleAt(workingHip, workingKnee, workingAnkle) : null;
+      const legBent = workingAngle != null && workingAngle < CFG.bottomAngle();
+      bottomHit = gap <= tol && legBent;
+      bottomLabel = `knee near ground + leg bent (Δ${gap.toFixed(0)}px, ${workingAngle != null ? workingAngle.toFixed(0)+'°' : 'n/a'})`;
     } else if (mode === 'rack'){
       // Push Press's counted cycle is rack → overhead → back to rack, not a
       // floor touch or a squat depth — "bottom" here means the wrist is back
       // near shoulder height (racked), not overhead. No calibration needed:
       // the shoulder keypoint is the live reference every frame.
-      const shoulder = kp[`${wristSide}_shoulder`];
-      if (!this.lastWrist || this.lastWrist.score < 0.3 || !shoulder || shoulder.score < 0.3){
-        this.phaseEl.textContent = 'tracking lost — repositioning needed';
+      //
+      // This is a DUMBBELL push press, done with a bell in each hand — so
+      // "racked" has to mean BOTH wrists back near BOTH shoulders, not just
+      // whichever single arm the code happens to be more confident about
+      // this frame. A single-arm reading would happily count a one-armed
+      // rep, which isn't a valid dumbbell push press. If either wrist isn't
+      // clearly visible, that's treated as "not confirmed yet" rather than
+      // silently falling back to one-arm tracking — same reasoning as the
+      // lockout check just below.
+      const rackGapFor = s => {
+        const w = kp[`${s}_wrist`], sh = kp[`${s}_shoulder`];
+        if (!w || !sh || w.score < 0.3 || sh.score < 0.3) return null;
+        return Math.abs(w.y - sh.y);
+      };
+      const leftGap = rackGapFor('left'), rightGap = rackGapFor('right');
+      if (leftGap == null || rightGap == null){
+        this.phaseEl.textContent = 'tracking lost — need both wrists visible for a dumbbell push press';
         this.phaseEl.classList.remove('hit');
         return;
       }
-      gap = Math.abs(this.lastWrist.y - shoulder.y);
       const tol = CFG.floorTolerance();
-      bottomHit = gap <= tol;
-      bottomLabel = `racked (Δ${gap.toFixed(0)}px from shoulder)`;
+      gap = Math.max(leftGap, rightGap); // the LESS-racked arm is what gates "both racked" — same logic as requiring both, just expressed as a single number for the review-flag margin check
+      bottomHit = leftGap <= tol && rightGap <= tol;
+      bottomLabel = `both arms racked (Δ${gap.toFixed(0)}px)`;
     } else {
       // 'angle' (squat) and 'wallball' share the same bottom check — a wall
       // ball's validity at the bottom is body position (hip crease below
@@ -679,24 +737,53 @@ class Lane {
       this.atBottom = true;
       // Capture exactly what tripped "bottom" right now — this is what gets
       // checked against the review margin once the rep completes at lockout.
-      this.bottomMetricAtHit = (mode === 'floor' || mode === 'burpee') ? (this.lastWrist.y - this.floorRefY)
+      // floorRefY can be null now (uncalibrated floor_deadlift/floor_snatch
+      // fallback runs on knee angle alone) — fall through to the angle
+      // metric in that case since that's what actually gated the rep.
+      const usesFloorMetric = (mode === 'floor_deadlift' || mode === 'floor_snatch' || mode === 'burpee') && this.floorRefY != null;
+      this.bottomMetricAtHit = usesFloorMetric ? (this.lastWrist.y - this.floorRefY)
         : (mode === 'lunge' || mode === 'rack') ? gap : angle;
       this.bottomConfAtHit = avgConf;
       this.phaseEl.textContent = `${bottomLabel} — ascending…`;
       this.phaseEl.classList.remove('hit');
     } else if (!this.atBottom){
-      this._bottomHoldFrames = 0; // condition dropped before confirming — reset, don't carry partial progress across unrelated frames
+      // A leaky-bucket reset, not a hard one: back off by one frame's worth
+      // of progress instead of wiping it entirely. A single stray frame of
+      // pose noise in the middle of a real, fast rep shouldn't cost the
+      // whole confirmation window — but sustained noise (nothing there at
+      // all) still decays back to zero within a couple of frames, same as
+      // before, since it never gets a chance to build back up.
+      this._bottomHoldFrames = Math.max(0, this._bottomHoldFrames - 1);
     } else if (this.atBottom && angle > TOP){
       // Standing tall alone doesn't prove the weight/ball made it overhead —
       // Push Press and Wall Ball both need that checked explicitly, same
       // helper as the opt-in DB Snatch check, just mandatory here instead of
       // a toggle since there's no valid version of either rep without it.
-      const overheadRequired = (mode === 'floor' && CFG.requireOverhead()) || mode === 'rack' || mode === 'wallball';
+      const overheadRequired = mode === 'floor_snatch' || mode === 'rack' || mode === 'wallball';
       if (overheadRequired){
-        const overhead = isOverheadLockout(kp, wristSide);
-        if (overhead === false){
-          this._topHoldFrames = 0;
-          this.phaseEl.textContent = `standing (${angle.toFixed(0)}°) — not overhead yet`;
+        let overheadFail;
+        if (mode === 'rack'){
+          // Dumbbell push press: both arms must INDEPENDENTLY confirm
+          // overhead lockout. Unlike the single-arm modes below, an arm we
+          // can't currently see does NOT get the benefit of the doubt here
+          // — silently falling back to whichever one arm is visible is
+          // exactly the single-arm tracking this bilateral check exists to
+          // rule out, since a genuine two-dumbbell rep needs both arms
+          // doing the work, not just the one the camera happens to see best.
+          const left = isOverheadLockout(kp, 'left');
+          const right = isOverheadLockout(kp, 'right');
+          overheadFail = !(left === true && right === true);
+        } else {
+          // Wall Ball / opt-in DB Snatch: single-arm by nature (DB Snatch is
+          // ONE arm, deliberately), so an unreadable arm still gets the
+          // usual benefit of the doubt rather than blocking the rep.
+          overheadFail = isOverheadLockout(kp, wristSide) === false;
+        }
+        if (overheadFail){
+          this._topHoldFrames = Math.max(0, this._topHoldFrames - 1); // leaky, same reasoning as the bottom-side reset above
+          this.phaseEl.textContent = mode === 'rack'
+            ? `standing (${angle.toFixed(0)}°) — need both arms locked out overhead`
+            : `standing (${angle.toFixed(0)}°) — not overhead yet`;
           this.phaseEl.classList.remove('hit');
           return;
         }
@@ -716,11 +803,11 @@ class Lane {
       this.logRepEvent({ lockoutAngle: angle, mode });
       this.syncCount();
     } else if (this.atBottom){
-      this._topHoldFrames = 0;
+      this._topHoldFrames = Math.max(0, this._topHoldFrames - 1);
       this.phaseEl.textContent = `ascending (${angle.toFixed(0)}°)`;
       this.phaseEl.classList.remove('hit');
     } else if (angle < TOP){
-      this.phaseEl.textContent = mode === 'floor' ? `lifting…` : `descending (${angle.toFixed(0)}°)`;
+      this.phaseEl.textContent = (mode === 'floor_deadlift' || mode === 'floor_snatch') ? `lifting…` : `descending (${angle.toFixed(0)}°)`;
       this.phaseEl.classList.remove('hit');
     } else {
       this.phaseEl.textContent = `standing / locked out (${angle.toFixed(0)}°)`;
@@ -741,13 +828,20 @@ class Lane {
       this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
       this.phaseEl.textContent = 'tracking lost — repositioning needed';
       this.phaseEl.classList.remove('hit');
+      this.trackLockStart = null;
       return;
     }
     this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
+    if (this.trackLockStart == null) this.trackLockStart = performance.now();
 
     if (!this.armed){
       this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
       this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
+      return;
+    }
+    if (performance.now() - this.trackLockStart < LOCK_ON_MS){
+      this.phaseEl.textContent = 'locking on…';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.remove('waiting');
       return;
     }
     this.phaseEl.classList.remove('waiting');
@@ -845,9 +939,6 @@ async function connectLiveScoring(){
       document.getElementById('bottomMode').value = q.get('mode');
       document.getElementById('bottomMode').dispatchEvent(new Event('change')); // reuse the existing show/hide logic for the right fields
     }
-    if (q.get('overhead') === '1') {
-      document.getElementById('requireOverhead').checked = true;
-    }
     liveStatusEl.textContent = `connected — writing live to Fixture ${ctx.fixture_id}`;
     liveStatusEl.style.color = 'var(--lime)';
   } catch (e) {
@@ -890,7 +981,7 @@ function pickMimeType(){
 }
 
 function startRecorderFor(r){
-  if (!cameraStream || (r.mediaRecorder && r.mediaRecorder.state === 'recording')) return;
+  if (!cameraStream) return;
   const mimeType = pickMimeType();
   // Each lane records straight off its OWN canvas — which already has that
   // lane's cropped video frame plus its own skeleton overlay drawn onto it
@@ -898,15 +989,42 @@ function startRecorderFor(r){
   // A's view (whatever that is, including e.g. its own zoom/tracking
   // quirks) and never bleeds into lane B's, or vice versa.
   const recStream = r.lane.canvas.captureStream(30);
-  r.mediaRecorder = new MediaRecorder(recStream, mimeType ? { mimeType } : undefined);
+  const mr = new MediaRecorder(recStream, mimeType ? { mimeType } : undefined);
   r.chunks = [];
-  r.mediaRecorder.ondataavailable = (e) => { if (e.data && e.data.size > 0) r.chunks.push(e.data); };
-  r.mediaRecorder.start(1000); // gather in 1s chunks so a crash mid-set doesn't lose the whole clip
+  mr.ondataavailable = (e) => { if (e.data && e.data.size > 0) r.chunks.push(e.data); };
+  mr.onerror = (e) => console.error('Wedgetail: recorder error on lane', r.lane.label, e.error || e);
+  // A recorder dying on its own (not from us calling .stop()) is a real
+  // failure mode a live competition can't just silently eat — this used to
+  // mean the rest of that set's footage was gone with no indication
+  // anything went wrong. Now: salvage whatever was captured before the
+  // crash as its own clip, upload it, and immediately start a fresh
+  // recorder so the remainder of the set keeps being captured. The
+  // deliberate stop path below (finalizeRecording) always installs its OWN
+  // onstop right before calling .stop(), which replaces this one — so this
+  // only ever fires for a genuinely unexpected stop, never a normal Reset.
+  mr.onstop = () => {
+    if (!activeRecordingMeta || r.mediaRecorder !== mr) return; // a deliberate stop already handled this — nothing to salvage
+    console.warn('Wedgetail: recorder for lane', r.lane.label, 'stopped unexpectedly mid-set — salvaging and restarting');
+    const salvageBlob = new Blob(r.chunks, { type: mr.mimeType || 'video/webm' });
+    const salvageDuration = getRecSeconds(r);
+    r.chunks = [];
+    if (salvageBlob.size > 0) {
+      uploadBlob(salvageBlob, salvageDuration, r.lane, `${activeRecordingMeta.exerciseName} (part)`, activeRecordingMeta.mode)
+        .then(res => console.log('Wedgetail: salvaged partial clip for', r.lane.label, res));
+    }
+    startRecorderFor(r); // resume capturing the rest of the set under a NEW recorder
+  };
+  mr.start(1000); // gather in 1s chunks so a crash mid-set doesn't lose the whole clip
+  r.mediaRecorder = mr;
   r.recStartPerf = performance.now();
 }
 
 function startRecording(){
   try {
+    activeRecordingMeta = {
+      exerciseName: document.getElementById('exerciseName').value || 'Exercise',
+      mode: CFG.bottomMode(),
+    };
     startRecorderFor(recA);
     startRecorderFor(recB);
     recStatusEl.textContent = '● recording (2 lanes)';
@@ -917,32 +1035,37 @@ function startRecording(){
   }
 }
 
-// Stops one lane's recorder and uploads it as its own independent recording
-// — its own label, its own rep log only, nothing about the other lane
-// included. Never throws, so a bad connection or a rejected upload on one
-// lane never blocks Reset or the other lane's own upload.
-async function stopAndUploadOne(r, exerciseName, mode){
-  if (!r.mediaRecorder || r.mediaRecorder.state === 'inactive') return { ok: false, reason: 'not recording' };
-  const duration = getRecSeconds(r);
-  const finished = new Promise(resolve => { r.mediaRecorder.onstop = resolve; });
-  r.mediaRecorder.stop();
-  await finished;
+// Fast, local-only: stops one lane's recorder and hands back its blob
+// WITHOUT touching the network. Deliberately separate from uploadBlob below
+// — that's what lets the judge move straight on to the next exercise
+// instead of waiting on venue WiFi to finish a slow upload.
+function stopRecorderSync(r){
+  return new Promise(resolve => {
+    if (!r.mediaRecorder || r.mediaRecorder.state === 'inactive') { resolve(null); return; }
+    const duration = getRecSeconds(r);
+    const mr = r.mediaRecorder;
+    mr.onstop = () => { // overwrites the crash-recovery handler above — this IS the deliberate stop
+      const blob = new Blob(r.chunks, { type: mr.mimeType || 'video/webm' });
+      r.chunks = [];
+      r.mediaRecorder = null;
+      resolve(blob.size > 0 ? { blob, duration } : null);
+    };
+    mr.stop();
+  });
+}
 
-  const mimeType = r.mediaRecorder.mimeType || 'video/webm';
-  const blob = new Blob(r.chunks, { type: mimeType });
-  r.chunks = [];
-  r.mediaRecorder = null;
-
-  if (blob.size === 0) return { ok: false, reason: 'empty clip' };
-
-  const repLog = r.lane.repEvents.map(ev => ({ lane: r.lane.label || '', ...ev }));
+// The actual network upload — never awaited by anything that would block
+// the judge, and never throws (a bad connection surfaces in recStatusEl,
+// not as a stuck UI).
+async function uploadBlob(blob, duration, lane, exerciseName, mode){
+  const repLog = lane.repEvents.map(ev => ({ lane: lane.label || '', ...ev }));
   const reviewFlags = repLog.filter(ev => ev.flagged).map(ev => ({ lane: ev.lane, rep: ev.rep, atSeconds: ev.atSeconds, reason: ev.reason }));
 
   const form = new FormData();
   form.append('video', blob, 'clip.webm');
   form.append('exercise_name', exerciseName);
   form.append('mode', mode);
-  form.append('lane_label', r.lane.label || '');
+  form.append('lane_label', lane.label || '');
   form.append('duration_sec', String(duration));
   form.append('rep_log', JSON.stringify(repLog));
   form.append('review_flags', JSON.stringify(reviewFlags));
@@ -954,28 +1077,48 @@ async function stopAndUploadOne(r, exerciseName, mode){
     return { ok: false, reason: data.reason || data.error || 'unknown error' };
   } catch (e) {
     console.error('Wedgetail: recording upload failed', e);
-    return { ok: false, reason: 'upload failed' };
+    return { ok: false, reason: 'upload failed — check connection' };
   }
 }
 
-async function stopAndUploadRecording(){
-  const exerciseName = document.getElementById('exerciseName').value || 'Exercise';
-  const mode = CFG.bottomMode();
-  recStatusEl.textContent = 'saving clips…';
+// Snapshot of which exercise/mode is actually being recorded right now —
+// captured once at GO time, not re-read live at save time. This matters
+// because by the time a clip gets auto-finalized (see goBtn handler below),
+// the judge has usually already switched the dropdown to the NEXT
+// exercise — reading it live at save time would tag the previous exercise's
+// clip with the next exercise's name.
+let activeRecordingMeta = null;
+
+// Stops both lanes' recorders IMMEDIATELY (fast, local — nothing here
+// touches the network) and uploads them in the background afterwards. The
+// judge can start the next exercise the instant this resolves; they never
+// wait on the actual upload, which is the fix for "recording saving needs
+// to be quicker" on slow venue WiFi.
+async function finalizeRecording(){
+  if (!activeRecordingMeta) return;
+  const { exerciseName, mode } = activeRecordingMeta;
+  activeRecordingMeta = null;
+
+  const [a, b] = await Promise.all([stopRecorderSync(recA), stopRecorderSync(recB)]);
+  recStatusEl.textContent = 'saving clips in background…';
   recStatusEl.style.color = 'var(--amber)';
 
-  const [resultA, resultB] = await Promise.all([
-    stopAndUploadOne(recA, exerciseName, mode),
-    stopAndUploadOne(recB, exerciseName, mode),
-  ]);
-
-  const label = (r, res) => `${r.lane.label || 'Lane'}: ${res.ok ? `saved ✓ (${res.flagCount} flagged)` : `not saved (${res.reason})`}`;
-  recStatusEl.textContent = `${label(recA, resultA)} · ${label(recB, resultB)}`;
-  recStatusEl.style.color = (resultA.ok && resultB.ok) ? 'var(--lime)' : 'var(--slate)';
+  (async () => { // deliberately not awaited by finalizeRecording's own caller
+    const [resultA, resultB] = await Promise.all([
+      a ? uploadBlob(a.blob, a.duration, recA.lane, exerciseName, mode) : { ok: false, reason: 'empty clip' },
+      b ? uploadBlob(b.blob, b.duration, recB.lane, exerciseName, mode) : { ok: false, reason: 'empty clip' },
+    ]);
+    const label = (r, res) => `${r.lane.label || 'Lane'}: ${res.ok ? `saved ✓ (${res.flagCount} flagged)` : `not saved (${res.reason})`}`;
+    recStatusEl.textContent = `${label(recA, resultA)} · ${label(recB, resultB)}`;
+    recStatusEl.style.color = (resultA.ok && resultB.ok) ? 'var(--lime)' : 'var(--slate)';
+  })();
 }
 
+// "Reset for Next Station" stays available for the last exercise of a
+// session (no following GO to auto-trigger a save) or to abort a station
+// early — but it's no longer the ONLY way a clip gets saved, see goBtn below.
 document.getElementById('resetBtn').addEventListener('click', async () => {
-  await stopAndUploadRecording();
+  await finalizeRecording();
   laneA.reset(); laneB.reset();
 });
 
@@ -991,14 +1134,18 @@ for (const id of REMEMBERED_FIELDS) {
     localStorage.setItem('wedgetail_' + id, e.target.value);
   });
 }
-{
-  const cb = document.getElementById('requireOverhead');
-  const saved = localStorage.getItem('wedgetail_requireOverhead');
-  if (saved !== null) cb.checked = (saved === 'true');
-  cb.addEventListener('change', () => localStorage.setItem('wedgetail_requireOverhead', cb.checked));
-}
 
-document.getElementById('goBtn').addEventListener('click', () => {
+document.getElementById('goBtn').addEventListener('click', async () => {
+  // If a clip from the PREVIOUS exercise is still recording, this GO means
+  // the judge has already moved on to the next station — auto-finalize and
+  // upload that previous clip and clear counts now, rather than requiring a
+  // separate manual Reset click just to make the last exercise's clip save.
+  // Reset is still there for the final exercise of a session, or to bail
+  // out of a station early.
+  if (activeRecordingMeta) {
+    await finalizeRecording();
+    laneA.reset(); laneB.reset();
+  }
   // Both lanes arm together — mirrors a synchronised start, not one athlete
   // getting a head start on the other. Recording starts at the same moment,
   // so the clip covers exactly the window reps can be counted in.
@@ -1009,19 +1156,24 @@ document.getElementById('goBtn').addEventListener('click', () => {
 // Which UI fields each counting mode needs — one place to keep this
 // consistent, now that there are 7 modes instead of the original 2.
 const TOLERANCE_LABELS = {
-  floor: 'Ground tolerance (px)', lunge: 'Ground tolerance (px)', burpee: 'Ground tolerance (px)',
+  floor_deadlift: 'Ground tolerance (px)', floor_snatch: 'Ground tolerance (px)', lunge: 'Ground tolerance (px)', burpee: 'Ground tolerance (px)',
   rack: 'Rack-height tolerance (px)', twist: 'Crossing margin (px)',
 };
 function updateModeUI(mode){
-  const needsAngle = mode === 'angle' || mode === 'wallball';
-  const needsTol = ['floor','lunge','rack','twist','burpee'].includes(mode);
-  const needsCalibrate = mode === 'floor' || mode === 'burpee'; // both need a one-time "wrist at floor" calibration
-  const needsOverheadToggle = mode === 'floor'; // opt-in for DB Snatch specifically — rack/wallball require it unconditionally, built into their own logic
+  // floor_deadlift/floor_snatch/burpee now ALSO need the knee-angle field —
+  // depth is a required second signal alongside the floor-touch check, not
+  // just for the pure angle-only modes anymore (see the dual-gate fix).
+  const needsAngle = ['angle', 'wallball', 'floor_deadlift', 'floor_snatch', 'burpee', 'lunge'].includes(mode);
+  const needsTol = ['floor_deadlift', 'floor_snatch', 'lunge', 'rack', 'twist', 'burpee'].includes(mode);
+  // Calibration is now optional for these — it adds a second, more precise
+  // signal on top of knee-angle depth, but tracking works without it (see
+  // the dual-gate fallback), so the button stays available rather than
+  // required.
+  const needsCalibrate = mode === 'floor_deadlift' || mode === 'floor_snatch' || mode === 'burpee';
   document.getElementById('bottomAngleField').style.display = needsAngle ? 'flex' : 'none';
   document.getElementById('floorToleranceField').style.display = needsTol ? 'flex' : 'none';
   if (needsTol) document.querySelector('#floorToleranceField label').textContent = TOLERANCE_LABELS[mode] || 'Tolerance (px)';
   document.getElementById('calibrateBtn').style.display = needsCalibrate ? 'inline-block' : 'none';
-  document.getElementById('requireOverheadField').style.display = needsOverheadToggle ? 'flex' : 'none';
   laneA.floorRefY = null; laneB.floorRefY = null; // switching modes invalidates any old calibration
 }
 document.getElementById('bottomMode').addEventListener('change', (e) => updateModeUI(e.target.value));
@@ -1054,7 +1206,13 @@ document.getElementById('startBtn').addEventListener('click', async () => {
     // congested venue WiFi than on a fast home/office connection.
     btn.textContent = 'Downloading tracking model…';
     detector = await poseDetection.createDetector(poseDetection.SupportedModels.MoveNet, {
-      modelType: poseDetection.movenet.modelType.SINGLEPOSE_LIGHTNING,
+      // Thunder over Lightning: Lightning is tuned for speed over accuracy,
+      // which is the wrong trade-off for a live-scoring counter — the two
+      // lanes already run one after another rather than simultaneously, so
+      // there's headroom to spend on more accurate keypoints instead. Worth
+      // watching frame rate on older/weaker devices; if it's genuinely too
+      // slow there, this is the first thing to revert.
+      modelType: poseDetection.movenet.modelType.SINGLEPOSE_THUNDER,
     });
 
     btn.textContent = 'Starting camera…';
