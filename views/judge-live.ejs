@@ -185,19 +185,17 @@
   // Anything not listed here falls straight through to the exact same
   // manual tap/entry UI as before — no behaviour change for those.
   const WEDGETAIL_MODES = {
-    'Trap Bar Deadlift': 'floor',
+    'Trap Bar Deadlift': 'floor_deadlift',
     'Goblet Squat (DB)': 'angle',
     'Lunges': 'lunge',
-    'DB Snatch': 'floor',
+    'DB Snatch': 'floor_snatch', // overhead lockout is now built into this mode itself, not a separate toggle
     'DB Push Press': 'rack',
     'Wall Balls': 'wallball',
     'Russian Twist': 'twist',
     'Burpee Box Jump-Overs': 'burpee', // heuristic: down+stand cycle only — doesn't verify the box was actually cleared, see judge note below
   };
-  const WEDGETAIL_OVERHEAD = { 'DB Snatch': true }; // exercises where standing up alone isn't enough — the weight has to visibly clear overhead too
   function wedgetailEmbedHtml(ex, mode){
-    const overheadParam = WEDGETAIL_OVERHEAD[ex.name] ? '&overhead=1' : '';
-    const src = `/wedgetail.html?embed=1&fixture=${FIXTURE_ID}&category=${encodeURIComponent(CATEGORY)}&exercise=${ex.id}&mode=${encodeURIComponent(mode)}${overheadParam}`;
+    const src = `/wedgetail.html?embed=1&fixture=${FIXTURE_ID}&category=${encodeURIComponent(CATEGORY)}&exercise=${ex.id}&mode=${encodeURIComponent(mode)}`;
     const caveat = mode === 'burpee'
       ? ' · camera checks hands-to-floor + standing only — it can\'t see the box, so watch the clear yourself and use NO REP if they skip it'
       : '';
