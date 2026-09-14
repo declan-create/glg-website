@@ -261,7 +261,8 @@ function angleAt(a,b,c){
 // any borderline call, this just stops the obvious miss (weight never left
 // the rack) from counting automatically.
 const OVERHEAD_MARGIN_PX = 15;   // wrist must clear the shoulder by at least this many px
-const OVERHEAD_ELBOW_MIN = 150;  // degrees — how straight the arm needs to be to call it "extended"
+const OVERHEAD_ELBOW_MIN = 160;  // degrees — how straight the arm needs to be to call it "extended" (Wall Ball / DB Snatch)
+const PUSH_PRESS_ELBOW_MIN = 110; // degrees — Push Press only: knees are ignored entirely for this lift, and the arm doesn't need to be anywhere near straight, just genuinely driven overhead rather than left at a shoulder/rack angle
 // A single frame crossing the bottom or top threshold used to be enough to
 // flip the rep state machine — fine for a real athlete, but normal per-frame
 // pose-estimation jitter (camera noise, compression, even a completely
@@ -290,12 +291,20 @@ const REP_CONFIRM_FRAMES = 3;
 // confident for this long, which is enough to filter out momentary/transient
 // detections without adding a delay athletes would ever notice.
 const LOCK_ON_MS = 700;
-function isOverheadLockout(kp, armSide){
+// A brief, real confidence dip shouldn't cost the whole lock-on wait — fast
+// or extreme movement (a prone burpee position, an arm reaching overhead on
+// a snatch) naturally causes momentary keypoint confidence drops that have
+// nothing to do with actually losing the athlete. Only treat tracking as
+// genuinely lost — and require re-earning the lock-on — if confidence has
+// been low for longer than this grace window, not on the very first low
+// frame.
+const TRACK_LOSS_GRACE_MS = 400;
+function isOverheadLockout(kp, armSide, elbowMin = OVERHEAD_ELBOW_MIN){
   const wrist = kp[`${armSide}_wrist`], elbow = kp[`${armSide}_elbow`], shoulder = kp[`${armSide}_shoulder`];
   if (!wrist || !elbow || !shoulder || wrist.score < 0.3 || elbow.score < 0.3 || shoulder.score < 0.3) return null; // can't see the arm clearly — see call site for how this is handled
   const wristAboveShoulder = (shoulder.y - wrist.y) > OVERHEAD_MARGIN_PX; // smaller y = higher up on screen
   const armAngle = angleAt(shoulder, elbow, wrist);
-  const armExtended = armAngle != null && armAngle > OVERHEAD_ELBOW_MIN;
+  const armExtended = armAngle != null && armAngle > elbowMin;
   return wristAboveShoulder && armExtended;
 }
 
@@ -319,6 +328,7 @@ class Lane {
     this.lockCenter = null; // FIELD-space hip/shoulder midpoint of the currently-locked athlete — null means "not locked onto anyone yet"
     this.candidate = null; // {x, y, frames} — a pose that jumped far from lockCenter, held here until it proves it's not just someone walking through
     this.twistSide = null; // 'left' | 'right' | null — last confirmed side touched, for Russian Twist
+    this._boxSide = null; // 'left' | 'right' | null — last counted side, for the Burpee Box Jump-Over alternation check
     this.label = el.querySelector('.tag') ? el.querySelector('.tag').textContent.trim() : (el.dataset.lane || '');
     this.bottomMetricAtHit = null; // the angle (or floor delta) captured at the instant "bottom" triggered, for this rep in progress
     this.bottomConfAtHit = null;   // tracking confidence at that same instant
@@ -328,6 +338,7 @@ class Lane {
     this._bottomHoldFrames = 0; // consecutive frames the bottom condition has held — see REP_CONFIRM_FRAMES
     this._topHoldFrames = 0;    // consecutive frames the lockout/standing condition has held
     this.trackLockStart = null; // when confident, unbroken tracking most recently began — see LOCK_ON_MS
+    this.lastGoodTrackAt = null; // see TRACK_LOSS_GRACE_MS
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
@@ -340,7 +351,7 @@ class Lane {
     el.querySelector('[data-role=plus]').addEventListener('click', () => {
       this.reps += 1;
       this.countEl.textContent = this.reps;
-      this.repEvents.push({ rep: this.reps, atSeconds: getRecSeconds(), mode: CFG.bottomMode(), bottomMetric: null, lockoutAngle: null, conf: null, flagged: false, reason: 'manually added (+1) by judge' });
+      this.repEvents.push({ rep: this.reps, atSeconds: getRecSeconds(this === laneA ? recA : recB), mode: CFG.bottomMode(), bottomMetric: null, lockoutAngle: null, conf: null, flagged: false, reason: 'manually added (+1) by judge' });
       this.syncCount();
     });
   }
@@ -362,7 +373,7 @@ class Lane {
     }, 250);
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this.trackLockStart = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this._boxSide = null; this.trackLockStart = null; this.lastGoodTrackAt = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
 
   // Grabs this lane's half of the shared video — but rather than a rigid
   // static crop, each lane maintains its own "view window" that smoothly
@@ -548,16 +559,20 @@ class Lane {
   // This is the finer-grained side of that same idea after the fact: a rep
   // that only just cleared the crude bar gets flagged for a coach to look
   // at later, without touching whether it counted live.
-  logRepEvent({ lockoutAngle, mode }){
+  logRepEvent({ lockoutAngle, mode, overheadUnconfirmed }){
     const ANGLE_REVIEW_MARGIN = 8;  // degrees — how close to the bottom-angle cutoff counts as "borderline"
     const FLOOR_REVIEW_MARGIN = 12; // px — how close to the floor tolerance counts as "borderline"
     const LOW_CONF_THRESHOLD = 0.5; // below this, trust the video review over the live call
 
     let flagged = false, reason = null;
-    if ((mode === 'floor_deadlift' || mode === 'floor_snatch' || mode === 'burpee') && this.floorRefY != null) {
+    if ((mode === 'floor_deadlift' || mode === 'floor_snatch') && this.floorRefY != null) {
       const tol = CFG.floorTolerance();
       const marginFromLine = this.bottomMetricAtHit - (-tol); // how far past the tolerance line it was, in px
-      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `${mode === 'burpee' ? 'hands' : 'weight'} only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `weight only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+    } else if (mode === 'burpee') {
+      const tol = CFG.floorTolerance();
+      const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin the flat position had below the tolerance line
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `only just registered as flat (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
     } else if (mode === 'lunge' || mode === 'rack') {
       const tol = CFG.floorTolerance();
       const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin it had below the tolerance line
@@ -574,9 +589,16 @@ class Lane {
     if (!flagged && this.bottomConfAtHit != null && this.bottomConfAtHit < LOW_CONF_THRESHOLD) {
       flagged = true; reason = `tracking confidence was low at the bottom of this rep (${(this.bottomConfAtHit*100).toFixed(0)}%) — worth a visual check`;
     }
+    if (!flagged && overheadUnconfirmed) {
+      // DB Snatch counts on standing tall alone (see the mode dispatch
+      // above for why the overhead check isn't a hard gate here) — this is
+      // where that gets surfaced instead: not blocking the count, just
+      // flagging it for a coach to glance at.
+      flagged = true; reason = 'stood up, but the camera couldn\'t confirm the weight cleared overhead — worth a visual check';
+    }
 
     this.repEvents.push({
-      rep: this.reps, atSeconds: getRecSeconds(), mode,
+      rep: this.reps, atSeconds: getRecSeconds(this === laneA ? recA : recB), mode,
       bottomMetric: this.bottomMetricAtHit, lockoutAngle,
       conf: this.bottomConfAtHit, flagged, reason,
     });
@@ -586,6 +608,7 @@ class Lane {
   updateCount(kp){
     const mode = CFG.bottomMode();
     if (mode === 'twist'){ this.updateCountTwist(kp); return; } // no leg/angle cycle involved at all — entirely separate logic below
+    if (mode === 'burpee'){ this.updateCountBoxJump(kp); return; } // flat + alternating side only — see method for why this needed its own logic rather than sharing the bottom/top cycle
 
     // pick whichever side (left/right) is more confidently visible this frame
     const sideScore = side => (kp[`${side}_hip`]?.score||0)+(kp[`${side}_knee`]?.score||0)+(kp[`${side}_ankle`]?.score||0);
@@ -601,9 +624,13 @@ class Lane {
       this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
       this.phaseEl.textContent = 'tracking lost — repositioning needed';
       this.phaseEl.classList.remove('hit');
-      this.trackLockStart = null; // tracking broke — any resumed detection has to re-earn its lock-on
+      const now = performance.now();
+      if (this.lastGoodTrackAt == null || now - this.lastGoodTrackAt > TRACK_LOSS_GRACE_MS) {
+        this.trackLockStart = null; // been bad for real, not just a blip — re-earn the lock-on
+      }
       return;
     }
+    this.lastGoodTrackAt = performance.now();
     this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
     if (this.trackLockStart == null) this.trackLockStart = performance.now();
 
@@ -754,43 +781,44 @@ class Lane {
       // all) still decays back to zero within a couple of frames, same as
       // before, since it never gets a chance to build back up.
       this._bottomHoldFrames = Math.max(0, this._bottomHoldFrames - 1);
-    } else if (this.atBottom && angle > TOP){
-      // Standing tall alone doesn't prove the weight/ball made it overhead —
-      // Push Press and Wall Ball both need that checked explicitly, same
-      // helper as the opt-in DB Snatch check, just mandatory here instead of
-      // a toggle since there's no valid version of either rep without it.
-      const overheadRequired = mode === 'floor_snatch' || mode === 'rack' || mode === 'wallball';
-      if (overheadRequired){
-        let overheadFail;
-        if (mode === 'rack'){
-          // Dumbbell push press: both arms must INDEPENDENTLY confirm
-          // overhead lockout. Unlike the single-arm modes below, an arm we
-          // can't currently see does NOT get the benefit of the doubt here
-          // — silently falling back to whichever one arm is visible is
-          // exactly the single-arm tracking this bilateral check exists to
-          // rule out, since a genuine two-dumbbell rep needs both arms
-          // doing the work, not just the one the camera happens to see best.
-          const left = isOverheadLockout(kp, 'left');
-          const right = isOverheadLockout(kp, 'right');
-          overheadFail = !(left === true && right === true);
-        } else {
-          // Wall Ball / opt-in DB Snatch: single-arm by nature (DB Snatch is
-          // ONE arm, deliberately), so an unreadable arm still gets the
-          // usual benefit of the doubt rather than blocking the rep.
-          overheadFail = isOverheadLockout(kp, wristSide) === false;
-        }
-        if (overheadFail){
-          this._topHoldFrames = Math.max(0, this._topHoldFrames - 1); // leaky, same reasoning as the bottom-side reset above
-          this.phaseEl.textContent = mode === 'rack'
-            ? `standing (${angle.toFixed(0)}°) — need both arms locked out overhead`
-            : `standing (${angle.toFixed(0)}°) — not overhead yet`;
-          this.phaseEl.classList.remove('hit');
-          return;
-        }
+    }
+
+    // What counts as "top of rep" varies by mode. Push Press deliberately
+    // ignores leg angle entirely now — a push press's validity is about the
+    // arms driving the weight up, not the knees locking straight (some
+    // re-bend/dip-drive in the legs is normal, correct form, not a fault).
+    // This used to gate on leg lockout FIRST for every mode including rack,
+    // which meant a technically good press with knees not fully extended
+    // could stall indefinitely waiting on something irrelevant to the lift.
+    let topHit, topLabel;
+    if (mode === 'rack'){
+      const left = isOverheadLockout(kp, 'left', PUSH_PRESS_ELBOW_MIN);
+      const right = isOverheadLockout(kp, 'right', PUSH_PRESS_ELBOW_MIN);
+      topHit = (left === true && right === true);
+      topLabel = 'both arms overhead';
+    } else {
+      topHit = angle > TOP;
+      topLabel = `lockout at ${angle.toFixed(0)}°`;
+      if (topHit && mode === 'wallball'){
+        // Wall Ball: single-arm-tracked by nature of which wrist is
+        // visible, so an unreadable arm still gets the benefit of the
+        // doubt rather than blocking the rep.
+        if (isOverheadLockout(kp, wristSide) === false){ topHit = false; topLabel = 'not overhead yet'; }
       }
+      // DB Snatch's overhead check is deliberately NOT a hard gate (unlike
+      // Push Press/Wall Ball) — real testing showed the mandatory version
+      // made it stop counting and behave unpredictably, likely because a
+      // one-arm overhead reach is more prone to brief tracking loss than a
+      // two-arm press. Standing tall (leg lockout) alone still completes
+      // the rep, exactly like the version that was reliable — overhead gets
+      // checked separately, below, only as a review flag rather than a
+      // blocker.
+    }
+
+    if (this.atBottom && topHit){
       this._topHoldFrames++;
       if (this._topHoldFrames < REP_CONFIRM_FRAMES){
-        this.phaseEl.textContent = `lockout at ${angle.toFixed(0)}° — confirming…`;
+        this.phaseEl.textContent = `${topLabel} — confirming…`;
         this.phaseEl.classList.remove('hit');
         return;
       }
@@ -798,13 +826,14 @@ class Lane {
       this.atBottom = false;
       this.reps += 1;
       this.countEl.textContent = this.reps;
-      this.phaseEl.textContent = `REP COUNTED — lockout at ${angle.toFixed(0)}°`;
+      this.phaseEl.textContent = `REP COUNTED — ${topLabel}`;
       this.phaseEl.classList.add('hit');
-      this.logRepEvent({ lockoutAngle: angle, mode });
+      const overheadUnconfirmed = mode === 'floor_snatch' && isOverheadLockout(kp, wristSide) === false;
+      this.logRepEvent({ lockoutAngle: angle, mode, overheadUnconfirmed });
       this.syncCount();
     } else if (this.atBottom){
       this._topHoldFrames = Math.max(0, this._topHoldFrames - 1);
-      this.phaseEl.textContent = `ascending (${angle.toFixed(0)}°)`;
+      this.phaseEl.textContent = mode === 'rack' ? `pressing… — need ${topLabel}` : `ascending (${angle.toFixed(0)}°)`;
       this.phaseEl.classList.remove('hit');
     } else if (angle < TOP){
       this.phaseEl.textContent = (mode === 'floor_deadlift' || mode === 'floor_snatch') ? `lifting…` : `descending (${angle.toFixed(0)}°)`;
@@ -828,9 +857,13 @@ class Lane {
       this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
       this.phaseEl.textContent = 'tracking lost — repositioning needed';
       this.phaseEl.classList.remove('hit');
-      this.trackLockStart = null;
+      const now = performance.now();
+      if (this.lastGoodTrackAt == null || now - this.lastGoodTrackAt > TRACK_LOSS_GRACE_MS) {
+        this.trackLockStart = null;
+      }
       return;
     }
+    this.lastGoodTrackAt = performance.now();
     this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
     if (this.trackLockStart == null) this.trackLockStart = performance.now();
 
@@ -870,6 +903,90 @@ class Lane {
       this.phaseEl.classList.remove('hit');
     } else {
       this.phaseEl.textContent = 'centre — twist to either side';
+      this.phaseEl.classList.remove('hit');
+    }
+  }
+
+  // Redesigned per gym-test feedback: tracking a full bottom+stand cycle
+  // (like every other mode) fought the athlete's own fast, lateral
+  // box-jump-over movement — a burpee's flat/prone position and the jump
+  // itself both naturally cause brief tracking-confidence dips, and each
+  // one was resetting progress before a full cycle could ever complete,
+  // which read as "the camera's focus isn't sticking with the athlete."
+  // This only tracks two things: being flat at the bottom of a rep, and
+  // which side of frame that happened on — alternating sides is what
+  // jumping over the box in between produces. No angle, no calibration, no
+  // standing-tall requirement. Box clearance itself stays the coach's call,
+  // same as it always has been here.
+  updateCountBoxJump(kp){
+    const lh = kp.left_hip, rh = kp.right_hip, la = kp.left_ankle, ra = kp.right_ankle;
+    const ok = lh && rh && la && ra && lh.score >= 0.3 && rh.score >= 0.3 && la.score >= 0.3 && ra.score >= 0.3;
+    if (!ok){
+      this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
+      this.phaseEl.textContent = 'tracking lost — repositioning needed';
+      this.phaseEl.classList.remove('hit');
+      const now = performance.now();
+      if (this.lastGoodTrackAt == null || now - this.lastGoodTrackAt > TRACK_LOSS_GRACE_MS) {
+        this.trackLockStart = null;
+      }
+      return;
+    }
+    this.lastGoodTrackAt = performance.now();
+    this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
+    if (this.trackLockStart == null) this.trackLockStart = performance.now();
+
+    if (!this.armed){
+      this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
+      return;
+    }
+    if (performance.now() - this.trackLockStart < LOCK_ON_MS){
+      this.phaseEl.textContent = 'locking on…';
+      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.remove('waiting');
+      return;
+    }
+    this.phaseEl.classList.remove('waiting');
+
+    const hipY = (lh.y + rh.y) / 2, ankleY = (la.y + ra.y) / 2, hipX = (lh.x + rh.x) / 2;
+    const flatGap = ankleY - hipY; // shrinks toward zero (or goes negative) when flat/prone; large while standing
+    const tol = CFG.floorTolerance();
+    const isFlat = flatGap <= tol;
+
+    if (!isFlat){
+      this._bottomHoldFrames = Math.max(0, this._bottomHoldFrames - 1);
+      if (this.atBottom) this.atBottom = false; // left the flat position — the next flat (on whichever side) is a fresh candidate
+      this.phaseEl.textContent = this._boxSide ? `standing / mid-jump (last: ${this._boxSide})` : 'standing / mid-jump';
+      this.phaseEl.classList.remove('hit');
+      return;
+    }
+    if (this.atBottom){
+      // Still down from the SAME flat instance that already resolved (either
+      // counted or rejected as same-side) — nothing new until they get up.
+      return;
+    }
+    this._bottomHoldFrames++;
+    if (this._bottomHoldFrames < REP_CONFIRM_FRAMES){
+      this.phaseEl.textContent = 'flat — confirming…';
+      this.phaseEl.classList.remove('hit');
+      return;
+    }
+    this._bottomHoldFrames = 0;
+    this.atBottom = true;
+    const side = hipX < (this.canvas.width / 2) ? 'left' : 'right';
+    if (this._boxSide == null || side !== this._boxSide){
+      // First rep of the set, or a genuine switch of sides — jumping over
+      // the box is exactly what produces that switch.
+      this._boxSide = side;
+      this.reps += 1;
+      this.countEl.textContent = this.reps;
+      this.bottomMetricAtHit = flatGap;
+      this.bottomConfAtHit = Math.min(lh.score, rh.score, la.score, ra.score);
+      this.phaseEl.textContent = `REP COUNTED — flat on ${side} side`;
+      this.phaseEl.classList.add('hit');
+      this.logRepEvent({ lockoutAngle: null, mode: 'burpee' });
+      this.syncCount();
+    } else {
+      this.phaseEl.textContent = `flat again on the SAME side — jump over first`;
       this.phaseEl.classList.remove('hit');
     }
   }
@@ -1163,13 +1280,13 @@ function updateModeUI(mode){
   // floor_deadlift/floor_snatch/burpee now ALSO need the knee-angle field —
   // depth is a required second signal alongside the floor-touch check, not
   // just for the pure angle-only modes anymore (see the dual-gate fix).
-  const needsAngle = ['angle', 'wallball', 'floor_deadlift', 'floor_snatch', 'burpee', 'lunge'].includes(mode);
+  const needsAngle = ['angle', 'wallball', 'floor_deadlift', 'floor_snatch', 'lunge'].includes(mode); // burpee's redesigned flat+side check uses no angle at all
   const needsTol = ['floor_deadlift', 'floor_snatch', 'lunge', 'rack', 'twist', 'burpee'].includes(mode);
   // Calibration is now optional for these — it adds a second, more precise
   // signal on top of knee-angle depth, but tracking works without it (see
   // the dual-gate fallback), so the button stays available rather than
   // required.
-  const needsCalibrate = mode === 'floor_deadlift' || mode === 'floor_snatch' || mode === 'burpee';
+  const needsCalibrate = mode === 'floor_deadlift' || mode === 'floor_snatch'; // burpee's redesigned check needs no calibration — see updateCountBoxJump
   document.getElementById('bottomAngleField').style.display = needsAngle ? 'flex' : 'none';
   document.getElementById('floorToleranceField').style.display = needsTol ? 'flex' : 'none';
   if (needsTol) document.querySelector('#floorToleranceField label').textContent = TOLERANCE_LABELS[mode] || 'Tolerance (px)';
