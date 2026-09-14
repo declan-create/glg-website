@@ -261,7 +261,8 @@ function angleAt(a,b,c){
 // any borderline call, this just stops the obvious miss (weight never left
 // the rack) from counting automatically.
 const OVERHEAD_MARGIN_PX = 15;   // wrist must clear the shoulder by at least this many px
-const OVERHEAD_ELBOW_MIN = 160;  // degrees — how straight the arm needs to be to call it "extended"
+const OVERHEAD_ELBOW_MIN = 160;  // degrees — how straight the arm needs to be to call it "extended" (Wall Ball / DB Snatch)
+const PUSH_PRESS_ELBOW_MIN = 110; // degrees — Push Press only: knees are ignored entirely for this lift, and the arm doesn't need to be anywhere near straight, just genuinely driven overhead rather than left at a shoulder/rack angle
 // A single frame crossing the bottom or top threshold used to be enough to
 // flip the rep state machine — fine for a real athlete, but normal per-frame
 // pose-estimation jitter (camera noise, compression, even a completely
@@ -298,12 +299,12 @@ const LOCK_ON_MS = 700;
 // been low for longer than this grace window, not on the very first low
 // frame.
 const TRACK_LOSS_GRACE_MS = 400;
-function isOverheadLockout(kp, armSide){
+function isOverheadLockout(kp, armSide, elbowMin = OVERHEAD_ELBOW_MIN){
   const wrist = kp[`${armSide}_wrist`], elbow = kp[`${armSide}_elbow`], shoulder = kp[`${armSide}_shoulder`];
   if (!wrist || !elbow || !shoulder || wrist.score < 0.3 || elbow.score < 0.3 || shoulder.score < 0.3) return null; // can't see the arm clearly — see call site for how this is handled
   const wristAboveShoulder = (shoulder.y - wrist.y) > OVERHEAD_MARGIN_PX; // smaller y = higher up on screen
   const armAngle = angleAt(shoulder, elbow, wrist);
-  const armExtended = armAngle != null && armAngle > OVERHEAD_ELBOW_MIN;
+  const armExtended = armAngle != null && armAngle > elbowMin;
   return wristAboveShoulder && armExtended;
 }
 
@@ -791,10 +792,10 @@ class Lane {
     // could stall indefinitely waiting on something irrelevant to the lift.
     let topHit, topLabel;
     if (mode === 'rack'){
-      const left = isOverheadLockout(kp, 'left');
-      const right = isOverheadLockout(kp, 'right');
+      const left = isOverheadLockout(kp, 'left', PUSH_PRESS_ELBOW_MIN);
+      const right = isOverheadLockout(kp, 'right', PUSH_PRESS_ELBOW_MIN);
       topHit = (left === true && right === true);
-      topLabel = 'both arms locked out overhead';
+      topLabel = 'both arms overhead';
     } else {
       topHit = angle > TOP;
       topLabel = `lockout at ${angle.toFixed(0)}°`;
