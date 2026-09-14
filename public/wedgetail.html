@@ -187,7 +187,9 @@
 
 <div class="howto">
   <b>Camera setup for a real test:</b> tripod or propped device, framing both lanes side by side, each athlete visible
-  head-to-ankle from a side-on angle. Good even lighting, no one crossing between the two lanes mid-set.
+  head-to-ankle from a side-on angle — allow roughly 2.5–3m of vertical frame for a taller athlete. <b style="color:var(--off)">The camera does not
+  move or zoom once tracking starts</b> — frame it correctly before hitting Start Camera, since the software will no
+  longer adjust the crop for you. Good even lighting, no one crossing between the two lanes mid-set.
   <ul>
     <li><b>The clock never pauses — only the counter's start does.</b> The camera can be live and framing/calibrating the
         moment it's mounted, but nothing counts until the judge taps <b>BOTH READY — GO</b>. That's the moment both
@@ -386,7 +388,17 @@ class Lane {
     const sw = vw/2, sh = vh;
     const sx = this.crop === 'right' ? sw : 0;
     this.rawHalf = {sw, sh};
-    if (!this.view) this.view = {x:0, y:0, w:sw, h:sh}; // start seeing the whole half, so it can find someone anywhere in it
+    // Fixed frame, deliberately: auto-zoom/follow used to smoothly crop in
+    // on wherever the athlete was standing, but real testing showed it
+    // actively working against a properly set-up camera — losing the whole
+    // upper body mid-rep on an overhead movement, drifting during a fast
+    // lateral box-jump-over, generally fighting a judge who has already
+    // framed the shot correctly. Once a camera is positioned, it should
+    // just stay put. This always uses the full half-frame, every frame,
+    // unconditionally — the judge is responsible for framing (see the
+    // updated setup note: ~2.5–3m of vertical frame for a tall athlete),
+    // not the software.
+    this.view = {x:0, y:0, w:sw, h:sh};
 
     const CANVAS_W = 480, CANVAS_H = 640; // fixed working resolution regardless of zoom level — keeps the detector input consistent
     if (this.canvas.width !== CANVAS_W || this.canvas.height !== CANVAS_H){
@@ -469,11 +481,11 @@ class Lane {
     this.ctx.drawImage(frame, 0, 0);
     if (!poses.length){
       this.confEl.textContent = 'tracking: none'; this.confEl.classList.add('low');
-      this.followAthlete({}); // nobody visible in the current crop at all — let it start widening to search again
-      return;
+      return; // fixed frame now — nothing to widen/search, just wait for the athlete to be visible again
     }
     const kpCanvas = kpByName(poses[0].keypoints); // canvas-space — for drawing the overlay only
     this.drawSkeleton(kpCanvas);
+    this.drawRepOverlay();
 
     const kpField = {}; // raw-half-frame space — for counting logic + view tracking, stable across zoom
     for (const name of Object.keys(kpCanvas)) kpField[name] = this.toField(kpCanvas[name]);
@@ -513,17 +525,17 @@ class Lane {
           if (this.candidate.frames >= CONFIRM_FRAMES){
             this.lockCenter = {x:cx, y:cy}; this.candidate = null; // held steady long enough — treat as a genuine hand-off
           } else {
-            // Not confirmed yet — don't chase this pose with the camera and don't count off it.
-            // Keep counting/framing paused on the real athlete's last known position instead.
+            // Not confirmed yet — don't count off it. Keep counting paused
+            // on the real athlete's last known position instead (the frame
+            // itself is fixed now, so there's no camera to hold steady —
+            // just the counting logic).
             this.confEl.textContent = 'tracking: verifying'; this.confEl.classList.add('low');
-            this.followAthlete({});
             return;
           }
         }
       }
     }
 
-    this.followAthlete(kpField);
     this.updateCount(kpField);
   }
 
@@ -541,6 +553,23 @@ class Lane {
       const p = kp[name];
       if (p.score>0.3){ ctx.beginPath(); ctx.arc(p.x,p.y,5,0,7); ctx.fill(); }
     }
+  }
+
+  // Burns the live rep count directly into the canvas pixels — this is the
+  // exact same canvas the recorder captures (see startRecorderFor), so a
+  // saved clip shows the count updating in real time as it's watched back,
+  // not just the tracking overlay. Drawn every frame regardless of mode.
+  drawRepOverlay(){
+    const ctx = this.ctx;
+    const text = `REPS: ${this.reps}`;
+    ctx.font = '800 34px Arial, sans-serif';
+    const textW = ctx.measureText(text).width;
+    const padX = 14, padY = 10, x = 10, y = 10;
+    ctx.fillStyle = 'rgba(0,24,20,0.72)'; // dark backing so the count stays readable over any background
+    ctx.fillRect(x, y, textW + padX*2, 34 + padY*1.4);
+    ctx.fillStyle = '#a3e635';
+    ctx.textBaseline = 'top';
+    ctx.fillText(text, x + padX, y + padY*0.6);
   }
 
   calibrate(){
