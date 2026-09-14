@@ -86,7 +86,12 @@
      don't need to nail an exact camera position. Pose estimation counts reps off a hip–knee angle cycle (squat /
      deadlift movement pattern), <b style="color:var(--off)">deliberately generously</b> — the count is meant to be
      crude and fast, not a form judge. All quality control lives with the coach, made live via
-     <b style="color:var(--off)">NO REP</b>. Tracking itself runs entirely in this browser tab; the raw camera feed from
+     <b style="color:var(--off)">NO REP</b>. Across every exercise, the camera is only confirming the exercise is
+     genuinely <b style="color:var(--off)">being undertaken</b> — close to the floor, genuinely overhead, real
+     movement happened — not verifying textbook form down to the inch or the degree. That's deliberate: a strict
+     automated judge produces constant borderline NO REPs for movement a human judge would wave through without a
+     second thought, and the coach is always right there to call out or NO REP anything the camera let through that
+     genuinely shouldn't have counted. Tracking itself runs entirely in this browser tab; the raw camera feed from
      GO to Reset is uploaded afterwards so coaches can review it, with reps close to the cutoff flagged for a second look.</p>
 </header>
 
@@ -114,7 +119,7 @@
   </div>
   <div class="field" id="floorToleranceField" style="display:none;">
     <label>Ground tolerance (px)</label>
-    <input id="floorTolerance" type="number" value="45" min="5" max="80" />
+    <input id="floorTolerance" type="number" value="55" min="5" max="100" />
   </div>
   <div class="field">
     <label>Lockout angle (° at knee)</label>
@@ -201,10 +206,14 @@
         DB Snatch are actually judged on an <b>equipment</b> fact — the weight returning to the floor between reps — which
         a body-only pose model can't see directly. "Weight-to-floor" mode gets there anyway: it calibrates once to the
         athlete's wrist height while the bar is genuinely resting on the floor, then treats "wrist back at that height"
-        as the floor check. Re-calibrate whenever the bar, plates, or athlete changes.</li>
-    <li>This build tracks a <b>hip–knee–ankle extension cycle</b> for lockout in both modes. Push Press needs a different
-        state machine again — its bottom is a rack position at the shoulder, not a floor check — tracking shoulder–elbow–wrist
-        instead; not wired up in this prototype.</li>
+        as the floor check. Re-calibrate whenever the bar, plates, or athlete changes. <b>This is deliberately generous,
+        not exact</b> — "Ground tolerance" is how close counts as close enough (close to the floor is fine, six inches
+        off it isn't), tune it once for your camera distance/height and it holds for the rest of the session since the
+        camera no longer moves. Even without calibrating, a genuine knee-bend still counts a rep — calibrating just adds
+        the more precise floor-touch signal on top.</li>
+    <li>Push Press ignores leg position entirely — knees bending or not is irrelevant to a valid dumbbell press, only
+        the arms matter. Overhead checks (Push Press, Wall Ball, DB Snatch) confirm the weight is genuinely above the
+        head, generously — the arm doesn't need to be bolt straight, same discretion a judge already uses.</li>
     <li>If a lane shows <span style="color:var(--danger)">tracking: low</span>, the model can't see that athlete's joints clearly —
         counting pauses automatically rather than guessing.</li>
     <li><b>NO REP</b> removes the last counted rep for that lane — same action as the "−" button already in the Live Counter
@@ -263,8 +272,15 @@ function angleAt(a,b,c){
 // any borderline call, this just stops the obvious miss (weight never left
 // the rack) from counting automatically.
 const OVERHEAD_MARGIN_PX = 15;   // wrist must clear the shoulder by at least this many px
-const OVERHEAD_ELBOW_MIN = 160;  // degrees — how straight the arm needs to be to call it "extended" (Wall Ball / DB Snatch)
-const PUSH_PRESS_ELBOW_MIN = 110; // degrees — Push Press only: knees are ignored entirely for this lift, and the arm doesn't need to be anywhere near straight, just genuinely driven overhead rather than left at a shoulder/rack angle
+const OVERHEAD_ELBOW_MIN = 110;  // degrees — same generous standard everywhere overhead is checked (Push Press, Wall Ball, DB Snatch's flag): confirming the weight is genuinely overhead, not that the arm is perfectly straight. A real judge doesn't NO REP a press for a slightly bent arm at lockout, so the camera shouldn't either — that's exactly the discretion a human judge already exercises, just made explicit here.
+// A separate, deliberately lenient threshold for "is this athlete actually
+// moving at all, not just standing there" — used by TBDL/DB Snatch/Lunge to
+// rule out a stationary false positive. This is NOT a depth or form
+// standard (that's what CFG.bottomAngle() is, for Goblet Squat and Wall
+// Ball specifically, where genuine depth actually is the standard being
+// judged) — it only needs to prove real movement happened, generously, so
+// it stays decoupled from whatever squat-depth number is dialled in.
+const GENEROUS_BEND_ANGLE = 145;
 // A single frame crossing the bottom or top threshold used to be enough to
 // flip the rep state machine — fine for a real athlete, but normal per-frame
 // pose-estimation jitter (camera noise, compression, even a completely
@@ -701,7 +717,7 @@ class Lane {
         this.phaseEl.classList.remove('hit');
         return;
       }
-      const kneeBent = angle < CFG.bottomAngle();
+      const kneeBent = angle < GENEROUS_BEND_ANGLE;
       if (this.floorRefY == null){
         bottomHit = kneeBent;
         bottomLabel = `depth reached — not floor-calibrated (${angle.toFixed(0)}°)`;
@@ -741,7 +757,7 @@ class Lane {
       const workingHip = kp[`${working.side}_hip`], workingKnee = kp[`${working.side}_knee`], workingAnkle = kp[`${working.side}_ankle`];
       const workingAngle = (workingHip?.score >= 0.3 && workingKnee?.score >= 0.3 && workingAnkle?.score >= 0.3)
         ? angleAt(workingHip, workingKnee, workingAnkle) : null;
-      const legBent = workingAngle != null && workingAngle < CFG.bottomAngle();
+      const legBent = workingAngle != null && workingAngle < GENEROUS_BEND_ANGLE;
       bottomHit = gap <= tol && legBent;
       bottomLabel = `knee near ground + leg bent (Δ${gap.toFixed(0)}px, ${workingAngle != null ? workingAngle.toFixed(0)+'°' : 'n/a'})`;
     } else if (mode === 'rack'){
@@ -821,8 +837,8 @@ class Lane {
     // could stall indefinitely waiting on something irrelevant to the lift.
     let topHit, topLabel;
     if (mode === 'rack'){
-      const left = isOverheadLockout(kp, 'left', PUSH_PRESS_ELBOW_MIN);
-      const right = isOverheadLockout(kp, 'right', PUSH_PRESS_ELBOW_MIN);
+      const left = isOverheadLockout(kp, 'left');
+      const right = isOverheadLockout(kp, 'right');
       topHit = (left === true && right === true);
       topLabel = 'both arms overhead';
     } else {
