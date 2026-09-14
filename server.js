@@ -72,7 +72,22 @@ app.set('layout', 'layout');
 
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  setHeaders: (res, filePath) => {
+    // wedgetail.html specifically has been the source of an entire night's
+    // worth of "it's fixed on the server but the browser/CDN won't show
+    // it" confusion — judges and coaches testing on phones, iframes, and
+    // incognito tabs all hit stale cached copies of this one file more than
+    // once. Rather than relying on everyone remembering to hard-refresh or
+    // clear site data after every deploy, just tell every browser and any
+    // CDN in front of this site to never cache it at all. It's a small,
+    // frequently-changing file — the cost of always fetching fresh is
+    // negligible next to the cost of a competition running stale logic.
+    if (filePath.endsWith('wedgetail.html')) {
+      res.setHeader('Cache-Control', 'no-store, must-revalidate');
+    }
+  },
+}));
 
 const fs = require('fs');
 
