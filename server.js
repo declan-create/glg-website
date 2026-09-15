@@ -2210,7 +2210,7 @@ app.post('/api/wedgetail/recordings', recordingLimiter, recordingUpload.single('
   // the counting logic elsewhere in wedgetail.html has since grown to cover
   // several more (lunge, rack, twist, burpee, wallball), so the allow-list
   // here needs to match or every other mode's clips get silently rejected.
-  const VALID_MODES = ['angle', 'floor', 'lunge', 'rack', 'twist', 'burpee', 'wallball'];
+  const VALID_MODES = ['angle', 'floor_deadlift', 'floor_snatch', 'lunge', 'rack', 'twist', 'burpee', 'wallball'];
   if (!isReasonableLength(exercise_name, 120) || !VALID_MODES.includes(mode)) {
     return res.status(400).json({ error: 'Missing or invalid exercise_name/mode.' });
   }
