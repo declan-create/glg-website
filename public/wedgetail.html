@@ -121,6 +121,10 @@
     <label>Ground tolerance (px)</label>
     <input id="floorTolerance" type="number" value="55" min="5" max="100" />
   </div>
+  <div class="field" id="lungeToleranceField" style="display:none;">
+    <label>Knee-to-ground tolerance (px)</label>
+    <input id="lungeTolerance" type="number" value="150" min="20" max="250" />
+  </div>
   <div class="field">
     <label>Lockout angle (° at knee)</label>
     <input id="topAngle" type="number" value="163" min="120" max="180" />
@@ -238,6 +242,7 @@ const CFG = {
   topAngle: () => parseFloat(document.getElementById('topAngle').value),
   bottomMode: () => document.getElementById('bottomMode').value,
   floorTolerance: () => parseFloat(document.getElementById('floorTolerance').value),
+  lungeTolerance: () => parseFloat(document.getElementById('lungeTolerance').value),
 };
 
 const CONNECTIONS = [
@@ -618,10 +623,14 @@ class Lane {
       const tol = CFG.floorTolerance();
       const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin the flat position had below the tolerance line
       if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `only just registered as flat (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
-    } else if (mode === 'lunge' || mode === 'rack') {
+    } else if (mode === 'lunge') {
+      const tol = CFG.lungeTolerance();
+      const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin it had below the tolerance line
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `knee only just reached ground tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+    } else if (mode === 'rack') {
       const tol = CFG.floorTolerance();
       const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin it had below the tolerance line
-      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `${mode === 'rack' ? 'rack position' : 'knee'} only just reached ground tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `rack position only just reached ground tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
     } else if (mode === 'twist') {
       const tol = CFG.floorTolerance();
       const marginFromLine = this.bottomMetricAtHit - tol; // how far past the crossing margin the wrist got
@@ -746,7 +755,7 @@ class Lane {
       }
       const working = legs.reduce((a,b) => a.gap <= b.gap ? a : b);
       gap = working.gap;
-      const tol = CFG.floorTolerance();
+      const tol = CFG.lungeTolerance();
       // Depth corroboration on the SAME working leg: the knee-to-ankle pixel
       // gap alone can't tell a real lunge apart from just walking or
       // stepping around in frame, since a normal walking stride briefly
@@ -1171,7 +1180,7 @@ function startRecorderFor(r){
     const salvageDuration = getRecSeconds(r);
     r.chunks = [];
     if (salvageBlob.size > 0) {
-      uploadBlob(salvageBlob, salvageDuration, r.lane, `${activeRecordingMeta.exerciseName} (part)`, activeRecordingMeta.mode)
+      uploadBlob(salvageBlob, salvageDuration, r.lane.label, [...r.lane.repEvents], `${activeRecordingMeta.exerciseName} (part)`, activeRecordingMeta.mode)
         .then(res => console.log('Wedgetail: salvaged partial clip for', r.lane.label, res));
     }
     startRecorderFor(r); // resume capturing the rest of the set under a NEW recorder
@@ -1218,16 +1227,20 @@ function stopRecorderSync(r){
 
 // The actual network upload — never awaited by anything that would block
 // the judge, and never throws (a bad connection surfaces in recStatusEl,
-// not as a stuck UI).
-async function uploadBlob(blob, duration, lane, exerciseName, mode){
-  const repLog = lane.repEvents.map(ev => ({ lane: lane.label || '', ...ev }));
+// not as a stuck UI). Takes repEvents as an already-captured snapshot
+// rather than reading lane.repEvents live — by the time this actually runs,
+// Reset may have already cleared the lane's live repEvents for the NEXT
+// exercise (see finalizeRecording, which snapshots this synchronously
+// before any async gap for exactly this reason).
+async function uploadBlob(blob, duration, laneLabel, repEventsSnapshot, exerciseName, mode){
+  const repLog = repEventsSnapshot.map(ev => ({ lane: laneLabel || '', ...ev }));
   const reviewFlags = repLog.filter(ev => ev.flagged).map(ev => ({ lane: ev.lane, rep: ev.rep, atSeconds: ev.atSeconds, reason: ev.reason }));
 
   const form = new FormData();
   form.append('video', blob, 'clip.webm');
   form.append('exercise_name', exerciseName);
   form.append('mode', mode);
-  form.append('lane_label', lane.label || '');
+  form.append('lane_label', laneLabel || '');
   form.append('duration_sec', String(duration));
   form.append('rep_log', JSON.stringify(repLog));
   form.append('review_flags', JSON.stringify(reviewFlags));
@@ -1256,22 +1269,34 @@ let activeRecordingMeta = null;
 // judge can start the next exercise the instant this resolves; they never
 // wait on the actual upload, which is the fix for "recording saving needs
 // to be quicker" on slow venue WiFi.
-async function finalizeRecording(){
+// Not awaited by GO/Reset at all now — everything here, including stopping
+// the recorder itself, runs fully in the background so the judge can arm
+// the next exercise the INSTANT they tap GO, with zero lag. The one thing
+// that has to happen synchronously, before this function returns control to
+// its caller, is snapshotting each lane's rep log — Reset clears
+// lane.repEvents immediately for the next exercise, but the actual stop+
+// upload below only gets to read it after a real async wait (the recorder's
+// own stop event), which would otherwise race against Reset and upload an
+// empty rep log.
+function finalizeRecording(){
   if (!activeRecordingMeta) return;
   const { exerciseName, mode } = activeRecordingMeta;
   activeRecordingMeta = null;
+  const repEventsA = [...laneA.repEvents];
+  const repEventsB = [...laneB.repEvents];
+  const labelA = laneA.label, labelB = laneB.label;
 
-  const [a, b] = await Promise.all([stopRecorderSync(recA), stopRecorderSync(recB)]);
-  recStatusEl.textContent = 'saving clips in background…';
-  recStatusEl.style.color = 'var(--amber)';
+  (async () => { // fire-and-forget from every caller's perspective
+    const [a, b] = await Promise.all([stopRecorderSync(recA), stopRecorderSync(recB)]);
+    recStatusEl.textContent = 'saving clips in background…';
+    recStatusEl.style.color = 'var(--amber)';
 
-  (async () => { // deliberately not awaited by finalizeRecording's own caller
     const [resultA, resultB] = await Promise.all([
-      a ? uploadBlob(a.blob, a.duration, recA.lane, exerciseName, mode) : { ok: false, reason: 'empty clip' },
-      b ? uploadBlob(b.blob, b.duration, recB.lane, exerciseName, mode) : { ok: false, reason: 'empty clip' },
+      a ? uploadBlob(a.blob, a.duration, labelA, repEventsA, exerciseName, mode) : { ok: false, reason: 'empty clip' },
+      b ? uploadBlob(b.blob, b.duration, labelB, repEventsB, exerciseName, mode) : { ok: false, reason: 'empty clip' },
     ]);
-    const label = (r, res) => `${r.lane.label || 'Lane'}: ${res.ok ? `saved ✓ (${res.flagCount} flagged)` : `not saved (${res.reason})`}`;
-    recStatusEl.textContent = `${label(recA, resultA)} · ${label(recB, resultB)}`;
+    const label = (name, res) => `${name || 'Lane'}: ${res.ok ? `saved ✓ (${res.flagCount} flagged)` : `not saved (${res.reason})`}`;
+    recStatusEl.textContent = `${label(labelA, resultA)} · ${label(labelB, resultB)}`;
     recStatusEl.style.color = (resultA.ok && resultB.ok) ? 'var(--lime)' : 'var(--slate)';
   })();
 }
@@ -1279,8 +1304,8 @@ async function finalizeRecording(){
 // "Reset for Next Station" stays available for the last exercise of a
 // session (no following GO to auto-trigger a save) or to abort a station
 // early — but it's no longer the ONLY way a clip gets saved, see goBtn below.
-document.getElementById('resetBtn').addEventListener('click', async () => {
-  await finalizeRecording();
+document.getElementById('resetBtn').addEventListener('click', () => {
+  finalizeRecording();
   laneA.reset(); laneB.reset();
 });
 
@@ -1288,7 +1313,7 @@ document.getElementById('resetBtn').addEventListener('click', async () => {
 // judge who finds better numbers doesn't have to re-enter them next test —
 // and Declan doesn't need to ship a new default just to make it stick.
 // (Real hosted page, not a Claude artifact sandbox — localStorage is fine here.)
-const REMEMBERED_FIELDS = ['exerciseName','bottomMode','bottomAngle','topAngle','floorTolerance'];
+const REMEMBERED_FIELDS = ['exerciseName','bottomMode','bottomAngle','topAngle','floorTolerance','lungeTolerance'];
 for (const id of REMEMBERED_FIELDS) {
   const saved = localStorage.getItem('wedgetail_' + id);
   if (saved !== null) document.getElementById(id).value = saved;
@@ -1297,15 +1322,17 @@ for (const id of REMEMBERED_FIELDS) {
   });
 }
 
-document.getElementById('goBtn').addEventListener('click', async () => {
+document.getElementById('goBtn').addEventListener('click', () => {
   // If a clip from the PREVIOUS exercise is still recording, this GO means
   // the judge has already moved on to the next station — auto-finalize and
   // upload that previous clip and clear counts now, rather than requiring a
   // separate manual Reset click just to make the last exercise's clip save.
   // Reset is still there for the final exercise of a session, or to bail
-  // out of a station early.
+  // out of a station early. finalizeRecording() no longer blocks anything —
+  // it snapshots what it needs synchronously and does the actual stop+
+  // upload in the background, so this whole handler runs instantly.
   if (activeRecordingMeta) {
-    await finalizeRecording();
+    finalizeRecording();
     laneA.reset(); laneB.reset();
   }
   // Both lanes arm together — mirrors a synchronised start, not one athlete
@@ -1318,7 +1345,7 @@ document.getElementById('goBtn').addEventListener('click', async () => {
 // Which UI fields each counting mode needs — one place to keep this
 // consistent, now that there are 7 modes instead of the original 2.
 const TOLERANCE_LABELS = {
-  floor_deadlift: 'Ground tolerance (px)', floor_snatch: 'Ground tolerance (px)', lunge: 'Ground tolerance (px)', burpee: 'Ground tolerance (px)',
+  floor_deadlift: 'Ground tolerance (px)', floor_snatch: 'Ground tolerance (px)', burpee: 'Ground tolerance (px)',
   rack: 'Rack-height tolerance (px)', twist: 'Crossing margin (px)',
 };
 function updateModeUI(mode){
@@ -1326,7 +1353,12 @@ function updateModeUI(mode){
   // depth is a required second signal alongside the floor-touch check, not
   // just for the pure angle-only modes anymore (see the dual-gate fix).
   const needsAngle = ['angle', 'wallball', 'floor_deadlift', 'floor_snatch', 'lunge'].includes(mode); // burpee's redesigned flat+side check uses no angle at all
-  const needsTol = ['floor_deadlift', 'floor_snatch', 'lunge', 'rack', 'twist', 'burpee'].includes(mode);
+  // Lunge gets its OWN tolerance field, not the shared one below — a
+  // knee-to-ankle gap and a wrist-to-shoulder/floor gap are completely
+  // different physical scales, and real gym testing showed a single shared
+  // default couldn't serve both without being wildly wrong for one of them.
+  const needsTol = ['floor_deadlift', 'floor_snatch', 'rack', 'twist', 'burpee'].includes(mode);
+  const needsLungeTol = mode === 'lunge';
   // Calibration is now optional for these — it adds a second, more precise
   // signal on top of knee-angle depth, but tracking works without it (see
   // the dual-gate fallback), so the button stays available rather than
@@ -1335,6 +1367,7 @@ function updateModeUI(mode){
   document.getElementById('bottomAngleField').style.display = needsAngle ? 'flex' : 'none';
   document.getElementById('floorToleranceField').style.display = needsTol ? 'flex' : 'none';
   if (needsTol) document.querySelector('#floorToleranceField label').textContent = TOLERANCE_LABELS[mode] || 'Tolerance (px)';
+  document.getElementById('lungeToleranceField').style.display = needsLungeTol ? 'flex' : 'none';
   document.getElementById('calibrateBtn').style.display = needsCalibrate ? 'inline-block' : 'none';
   laneA.floorRefY = null; laneB.floorRefY = null; // switching modes invalidates any old calibration
 }
