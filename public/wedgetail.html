@@ -110,7 +110,7 @@
       <option value="rack">Rack-to-overhead (push press)</option>
       <option value="wallball">Squat-to-overhead (wall ball)</option>
       <option value="twist">Side-to-side crossing (Russian twist)</option>
-      <option value="burpee">Flat-to-standing (burpee box jump-over — box clearance judged manually)</option>
+      <option value="burpee">Zone crossing (burpee box jump-over — burpee quality judged manually)</option>
     </select>
   </div>
   <div class="field" id="bottomAngleField">
@@ -120,6 +120,10 @@
   <div class="field" id="floorToleranceField" style="display:none;">
     <label>Ground tolerance (px)</label>
     <input id="floorTolerance" type="number" value="55" min="5" max="100" />
+  </div>
+  <div class="field" id="boxWidthField" style="display:none;">
+    <label>Box zone width (% of lane)</label>
+    <input id="boxWidth" type="number" value="20" min="5" max="60" />
   </div>
   <div class="field" id="lungeToleranceField" style="display:none;">
     <label>Knee-to-ground tolerance (px)</label>
@@ -215,6 +219,12 @@
         off it isn't), tune it once for your camera distance/height and it holds for the rest of the session since the
         camera no longer moves. Even without calibrating, a genuine knee-bend still counts a rep — calibrating just adds
         the more precise floor-touch signal on top.</li>
+    <li><b>Burpee Box Jump-Over counts zone crossings, not body position.</b> Set the camera side-on so athletes jump
+        left↔right across the frame, then tap each lane's video where the box is (the shaded strip). Every time the
+        athlete is next seen on the opposite side of the box, that's a rep. The camera losing them mid-jump or while
+        flat doesn't matter. Burpee depth, chest-to-floor and clearing the box are the judge's call via <b>NO REP</b>;
+        crossings that come unusually fast are flagged for review. In doubles, the resting partner should stand
+        outside the lane's frame, otherwise the camera may pick them up instead.</li>
     <li>Push Press ignores leg position entirely — knees bending or not is irrelevant to a valid dumbbell press, only
         the arms matter. Overhead checks (Push Press, Wall Ball, DB Snatch) confirm the weight is genuinely above the
         head, generously — the arm doesn't need to be bolt straight, same discretion a judge already uses.</li>
@@ -243,7 +253,59 @@ const CFG = {
   bottomMode: () => document.getElementById('bottomMode').value,
   floorTolerance: () => parseFloat(document.getElementById('floorTolerance').value),
   lungeTolerance: () => parseFloat(document.getElementById('lungeTolerance').value),
+  boxWidth: () => Math.min(0.6, Math.max(0.05, (parseFloat(document.getElementById('boxWidth').value) || 20) / 100)),
 };
+
+// ---- Burpee Box Jump-Over: zone-crossing counter ----
+// Replaces the old "detect flat + which side" approach, which needed the
+// pose model to hold a confident lock on all four hip/ankle points at the
+// exact moment the athlete was prone (the worst moment for confidence) and
+// then re-earn a lock-on after every fast lateral jump. In practice it was
+// always one step behind the athlete.
+//
+// This mode never needs a lock at all. Each lane has a box zone (judge taps
+// the video where the box is). Either side of it is a floor zone. A rep is
+// counted each time the athlete's body is seen settled in the OPPOSITE zone
+// from the last one — i.e. they went over the box. Frames where the athlete
+// can't be seen, or is mid-air over the box, are simply ignored: the counter
+// remembers which side they were last on and waits. The burpee itself,
+// chest-to-floor, and box clearance stay with the judge (NO REP), the same
+// split as every other mode — the camera only keeps the numbers flowing.
+const ZONE_CONFIRM_FRAMES = 2;   // consecutive frames seen in the new zone before the crossing counts — filters a one-frame bogus detection
+const BOX_MIN_REP_MS = 1000;     // a crossing faster than this after the last one is physically impossible for a real rep — ignored as a detection glitch
+const BOX_REVIEW_UNDER_MS = 1800; // a crossing faster than this is counted, but flagged for the coach: the burpee may have been cut short
+
+// Rough horizontal position of whoever's in the lane, as a 0–1 fraction of
+// the lane width. Uses ANY reasonably visible keypoints (median, so a
+// couple of bad points can't drag it) rather than demanding specific
+// joints — a prone, side-on athlete hides half their limbs, but a handful
+// of points is plenty to say which side of the box they're on.
+function bodyXFraction(kp, laneWidth){
+  if (!laneWidth) return null;
+  const xs = Object.values(kp).filter(p => p && p.score >= 0.2).map(p => p.x / laneWidth).sort((a,b) => a-b);
+  if (xs.length < 3) return null;
+  return xs[Math.floor(xs.length/2)];
+}
+
+// Pure state step — kept separate from the Lane so it can be tested on its own.
+// st: { zone, cand, candFrames, lastCrossAt }  (mutated)
+// returns { event: 'none'|'inBox'|'same'|'confirming'|'start'|'tooFast'|'cross', zone?, from?, to?, sinceMs? }
+function boxZoneStep(st, xFrac, now, boxX, boxWidth){
+  if (xFrac == null) return { event: 'none' };
+  const half = boxWidth / 2;
+  const zone = xFrac < boxX - half ? 'left' : xFrac > boxX + half ? 'right' : null;
+  if (!zone) return { event: 'inBox' }; // over/at the box — neither side, nothing changes
+  if (zone === st.zone){ st.cand = null; st.candFrames = 0; return { event: 'same', zone }; }
+  if (st.cand !== zone){ st.cand = zone; st.candFrames = 1; } else st.candFrames++;
+  if (st.candFrames < ZONE_CONFIRM_FRAMES) return { event: 'confirming', zone };
+  const prev = st.zone;
+  st.cand = null; st.candFrames = 0;
+  if (prev == null){ st.zone = zone; return { event: 'start', zone }; } // first sighting — this is the starting side, not a rep
+  const sinceMs = st.lastCrossAt == null ? Infinity : now - st.lastCrossAt;
+  if (sinceMs < BOX_MIN_REP_MS) return { event: 'tooFast', zone }; // keep the old side — almost certainly a misdetection, not a real crossing
+  st.zone = zone; st.lastCrossAt = now;
+  return { event: 'cross', from: prev, to: zone, sinceMs };
+}
 
 const CONNECTIONS = [
   ['left_shoulder','right_shoulder'],['left_shoulder','left_elbow'],['left_elbow','left_wrist'],
@@ -351,7 +413,10 @@ class Lane {
     this.lockCenter = null; // FIELD-space hip/shoulder midpoint of the currently-locked athlete — null means "not locked onto anyone yet"
     this.candidate = null; // {x, y, frames} — a pose that jumped far from lockCenter, held here until it proves it's not just someone walking through
     this.twistSide = null; // 'left' | 'right' | null — last confirmed side touched, for Russian Twist
-    this._boxSide = null; // 'left' | 'right' | null — last counted side, for the Burpee Box Jump-Over alternation check
+    this.laneId = el.dataset.lane || '';
+    this.boxZone = { zone: null, cand: null, candFrames: 0, lastCrossAt: null }; // see boxZoneStep
+    const savedBoxX = parseFloat(localStorage.getItem('wedgetail_boxX_' + this.laneId));
+    this.boxX = isFinite(savedBoxX) ? savedBoxX : 0.5; // box centre as a 0–1 fraction of lane width — judge taps the video to set it
     this.label = el.querySelector('.tag') ? el.querySelector('.tag').textContent.trim() : (el.dataset.lane || '');
     this.bottomMetricAtHit = null; // the angle (or floor delta) captured at the instant "bottom" triggered, for this rep in progress
     this.bottomConfAtHit = null;   // tracking confidence at that same instant
@@ -362,6 +427,19 @@ class Lane {
     this._topHoldFrames = 0;    // consecutive frames the lockout/standing condition has held
     this.trackLockStart = null; // when confident, unbroken tracking most recently began — see LOCK_ON_MS
     this.lastGoodTrackAt = null; // see TRACK_LOSS_GRACE_MS
+
+    // Burpee mode: tap the lane's video where the box is to move the box zone.
+    // Remembered per lane on this device, since the camera/box setup rarely
+    // changes between sets.
+    this.canvas.addEventListener('click', (e) => {
+      if (CFG.bottomMode() !== 'burpee') return;
+      const r = this.canvas.getBoundingClientRect();
+      this.boxX = Math.min(0.9, Math.max(0.1, (e.clientX - r.left) / r.width));
+      try { localStorage.setItem('wedgetail_boxX_' + this.laneId, String(this.boxX)); } catch (err) {}
+      this.boxZone.zone = null; this.boxZone.cand = null; this.boxZone.candFrames = 0; // re-learn the starting side against the new box position
+      this.phaseEl.textContent = 'box position set — counting each crossing over it';
+      this.phaseEl.classList.remove('hit');
+    });
 
     el.querySelector('[data-role=norep]').addEventListener('click', () => {
       this.reps = Math.max(0, this.reps - 1);
@@ -396,7 +474,7 @@ class Lane {
     }, 250);
   }
 
-  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this._boxSide = null; this.trackLockStart = null; this.lastGoodTrackAt = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
+  reset(){ this.reps = 0; this.atBottom = false; this.floorRefY = null; this.armed = false; this.view = null; this.lostSince = null; this.lockCenter = null; this.candidate = null; this.twistSide = null; this.boxZone = { zone: null, cand: null, candFrames: 0, lastCrossAt: null }; this.trackLockStart = null; this.lastGoodTrackAt = null; this.countEl.textContent = 0; this.repEvents = []; this.bottomMetricAtHit = null; this.bottomConfAtHit = null; this.syncCount(); }
 
   // Grabs this lane's half of the shared video — but rather than a rigid
   // static crop, each lane maintains its own "view window" that smoothly
@@ -500,12 +578,15 @@ class Lane {
     if (!frame) return;
     const poses = await detector.estimatePoses(frame, {flipHorizontal:false});
     this.ctx.drawImage(frame, 0, 0);
+    const boxMode = CFG.bottomMode() === 'burpee';
     if (!poses.length){
+      if (boxMode) this.drawBoxZone(null);
       this.confEl.textContent = 'tracking: none'; this.confEl.classList.add('low');
       return; // fixed frame now — nothing to widen/search, just wait for the athlete to be visible again
     }
     const kpCanvas = kpByName(poses[0].keypoints); // canvas-space — for drawing the overlay only
     this.drawSkeleton(kpCanvas);
+    if (boxMode) this.drawBoxZone(bodyXFraction(kpCanvas, this.canvas.width));
     this.drawRepOverlay();
 
     const kpField = {}; // raw-half-frame space — for counting logic + view tracking, stable across zoom
@@ -525,7 +606,12 @@ class Lane {
     // hand-off (athlete moved further than expected) apart from someone
     // briefly crossing the shot, which rarely lingers that long.
     const torsoPts = ['left_hip','right_hip','left_shoulder','right_shoulder'].map(n => kpField[n]).filter(p => p && p.score > 0.3);
-    if (torsoPts.length){
+    // Skipped in burpee mode: a box jump-over legitimately moves the athlete
+    // further between frames than this check allows, so it was putting the
+    // lane into "verifying" (counting paused) on nearly every jump — the main
+    // cause of the "can't keep up with the athlete" behaviour. Zone counting
+    // has its own glitch filters instead (ZONE_CONFIRM_FRAMES, BOX_MIN_REP_MS).
+    if (torsoPts.length && !boxMode){
       let cx=0, cy=0; for (const p of torsoPts){ cx+=p.x; cy+=p.y; } cx/=torsoPts.length; cy/=torsoPts.length;
       const CONFIRM_FRAMES = 8; // ~0.4–0.6s at this loop's typical rate — enough to reject a quick walk-through, not enough to feel laggy on a real hand-off
       if (!this.lockCenter){
@@ -558,6 +644,29 @@ class Lane {
     }
 
     this.updateCount(kpField);
+  }
+
+  // Shades the box zone and marks where the counter thinks the athlete is,
+  // so the judge can see at a glance whether the box zone is in the right
+  // place. Drawn after detection, so it never affects what the model sees.
+  drawBoxZone(xFrac){
+    const ctx = this.ctx, W = this.canvas.width, H = this.canvas.height;
+    const half = CFG.boxWidth() / 2;
+    const x0 = (this.boxX - half) * W, x1 = (this.boxX + half) * W;
+    ctx.fillStyle = 'rgba(230,180,0,0.18)'; ctx.fillRect(x0, 0, x1 - x0, H);
+    ctx.strokeStyle = 'rgba(230,180,0,0.85)'; ctx.lineWidth = 2; ctx.setLineDash([10, 8]);
+    ctx.beginPath(); ctx.moveTo(x0, 0); ctx.lineTo(x0, H); ctx.moveTo(x1, 0); ctx.lineTo(x1, H); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.font = '700 18px Arial, sans-serif'; ctx.fillStyle = 'rgba(230,180,0,0.95)'; ctx.textBaseline = 'bottom';
+    ctx.fillText('BOX', (x0 + x1) / 2 - 18, H - 10);
+    if (this.boxZone.zone){ // highlight the side the athlete is currently counted as being on
+      ctx.fillStyle = 'rgba(163,230,53,0.10)';
+      if (this.boxZone.zone === 'left') ctx.fillRect(0, 0, x0, H); else ctx.fillRect(x1, 0, W - x1, H);
+    }
+    if (xFrac != null){
+      ctx.strokeStyle = '#a3e635'; ctx.lineWidth = 4;
+      ctx.beginPath(); ctx.moveTo(xFrac * W, H - 60); ctx.lineTo(xFrac * W, H); ctx.stroke();
+    }
   }
 
   drawSkeleton(kp){
@@ -620,9 +729,11 @@ class Lane {
       const marginFromLine = this.bottomMetricAtHit - (-tol); // how far past the tolerance line it was, in px
       if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `weight only just reached the floor tolerance (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
     } else if (mode === 'burpee') {
-      const tol = CFG.floorTolerance();
-      const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin the flat position had below the tolerance line
-      if (marginFromLine < FLOOR_REVIEW_MARGIN) { flagged = true; reason = `only just registered as flat (Δ${this.bottomMetricAtHit.toFixed(0)}px vs ${tol}px allowed)`; }
+      // Zone mode never sees the burpee itself — only the crossing. A
+      // crossing that came unusually soon after the last one is the best
+      // available hint that the burpee may have been cut short.
+      const gapMs = this.bottomMetricAtHit;
+      if (gapMs != null && gapMs < BOX_REVIEW_UNDER_MS) { flagged = true; reason = `crossed back only ${(gapMs/1000).toFixed(1)}s after the previous rep — quick enough that the burpee may have been cut short, worth a visual check`; }
     } else if (mode === 'lunge') {
       const tol = CFG.lungeTolerance();
       const marginFromLine = tol - this.bottomMetricAtHit; // how much px margin it had below the tolerance line
@@ -662,7 +773,7 @@ class Lane {
   updateCount(kp){
     const mode = CFG.bottomMode();
     if (mode === 'twist'){ this.updateCountTwist(kp); return; } // no leg/angle cycle involved at all — entirely separate logic below
-    if (mode === 'burpee'){ this.updateCountBoxJump(kp); return; } // flat + alternating side only — see method for why this needed its own logic rather than sharing the bottom/top cycle
+    if (mode === 'burpee'){ this.updateCountBoxJump(kp); return; } // zone crossing — no lock-on or angle cycle, see updateCountBoxJump
 
     // pick whichever side (left/right) is more confidently visible this frame
     const sideScore = side => (kp[`${side}_hip`]?.score||0)+(kp[`${side}_knee`]?.score||0)+(kp[`${side}_ankle`]?.score||0);
@@ -961,86 +1072,51 @@ class Lane {
     }
   }
 
-  // Redesigned per gym-test feedback: tracking a full bottom+stand cycle
-  // (like every other mode) fought the athlete's own fast, lateral
-  // box-jump-over movement — a burpee's flat/prone position and the jump
-  // itself both naturally cause brief tracking-confidence dips, and each
-  // one was resetting progress before a full cycle could ever complete,
-  // which read as "the camera's focus isn't sticking with the athlete."
-  // This only tracks two things: being flat at the bottom of a rep, and
-  // which side of frame that happened on — alternating sides is what
-  // jumping over the box in between produces. No angle, no calibration, no
-  // standing-tall requirement. Box clearance itself stays the coach's call,
-  // same as it always has been here.
+  // Zone-crossing counter for Burpee Box Jump-Over — see boxZoneStep and
+  // the block above it for the full reasoning. Deliberately has NO lock-on
+  // wait and no tracking-loss reset: losing the athlete mid-jump costs
+  // nothing, because all that matters is which side they're next seen on.
   updateCountBoxJump(kp){
-    const lh = kp.left_hip, rh = kp.right_hip, la = kp.left_ankle, ra = kp.right_ankle;
-    const ok = lh && rh && la && ra && lh.score >= 0.3 && rh.score >= 0.3 && la.score >= 0.3 && ra.score >= 0.3;
-    if (!ok){
-      this.confEl.textContent = 'tracking: low'; this.confEl.classList.add('low');
-      this.phaseEl.textContent = 'tracking lost — repositioning needed';
+    const xFrac = bodyXFraction(kp, this.rawHalf.sw);
+    const side = this.boxZone.zone;
+    if (xFrac == null){
+      this.confEl.textContent = 'tracking: searching'; this.confEl.classList.add('low');
+      this.phaseEl.textContent = side ? `athlete not visible this moment — last seen ${side} side, still counting` : 'looking for athlete…';
       this.phaseEl.classList.remove('hit');
-      const now = performance.now();
-      if (this.lastGoodTrackAt == null || now - this.lastGoodTrackAt > TRACK_LOSS_GRACE_MS) {
-        this.trackLockStart = null;
-      }
       return;
     }
-    this.lastGoodTrackAt = performance.now();
     this.confEl.textContent = 'tracking: good'; this.confEl.classList.remove('low');
-    if (this.trackLockStart == null) this.trackLockStart = performance.now();
+
+    const res = boxZoneStep(this.boxZone, xFrac, performance.now(), this.boxX, CFG.boxWidth());
 
     if (!this.armed){
-      this.phaseEl.textContent = '⏸ TRACKING ONLY — tap "BOTH READY — GO" above to start counting';
+      // Still learn which side they start on, so the first jump after GO counts.
+      this.phaseEl.textContent = `⏸ TRACKING ONLY — starting side: ${this.boxZone.zone || '?'} — tap "BOTH READY — GO" to count (tap the video to move the box zone)`;
       this.phaseEl.classList.remove('hit'); this.phaseEl.classList.add('waiting');
-      return;
-    }
-    if (performance.now() - this.trackLockStart < LOCK_ON_MS){
-      this.phaseEl.textContent = 'locking on…';
-      this.phaseEl.classList.remove('hit'); this.phaseEl.classList.remove('waiting');
       return;
     }
     this.phaseEl.classList.remove('waiting');
 
-    const hipY = (lh.y + rh.y) / 2, ankleY = (la.y + ra.y) / 2, hipX = (lh.x + rh.x) / 2;
-    const flatGap = ankleY - hipY; // shrinks toward zero (or goes negative) when flat/prone; large while standing
-    const tol = CFG.floorTolerance();
-    const isFlat = flatGap <= tol;
-
-    if (!isFlat){
-      this._bottomHoldFrames = Math.max(0, this._bottomHoldFrames - 1);
-      if (this.atBottom) this.atBottom = false; // left the flat position — the next flat (on whichever side) is a fresh candidate
-      this.phaseEl.textContent = this._boxSide ? `standing / mid-jump (last: ${this._boxSide})` : 'standing / mid-jump';
-      this.phaseEl.classList.remove('hit');
-      return;
-    }
-    if (this.atBottom){
-      // Still down from the SAME flat instance that already resolved (either
-      // counted or rejected as same-side) — nothing new until they get up.
-      return;
-    }
-    this._bottomHoldFrames++;
-    if (this._bottomHoldFrames < REP_CONFIRM_FRAMES){
-      this.phaseEl.textContent = 'flat — confirming…';
-      this.phaseEl.classList.remove('hit');
-      return;
-    }
-    this._bottomHoldFrames = 0;
-    this.atBottom = true;
-    const side = hipX < (this.canvas.width / 2) ? 'left' : 'right';
-    if (this._boxSide == null || side !== this._boxSide){
-      // First rep of the set, or a genuine switch of sides — jumping over
-      // the box is exactly what produces that switch.
-      this._boxSide = side;
+    if (res.event === 'cross'){
       this.reps += 1;
       this.countEl.textContent = this.reps;
-      this.bottomMetricAtHit = flatGap;
-      this.bottomConfAtHit = Math.min(lh.score, rh.score, la.score, ra.score);
-      this.phaseEl.textContent = `REP COUNTED — flat on ${side} side`;
+      this.bottomMetricAtHit = isFinite(res.sinceMs) ? res.sinceMs : null; // time since previous crossing — drives the "too quick" review flag
+      this.bottomConfAtHit = null; // per-keypoint confidence isn't meaningful for a position-only count
+      this.phaseEl.textContent = `REP COUNTED — over the box to the ${res.to} side`;
       this.phaseEl.classList.add('hit');
       this.logRepEvent({ lockoutAngle: null, mode: 'burpee' });
       this.syncCount();
-    } else {
-      this.phaseEl.textContent = `flat again on the SAME side — jump over first`;
+    } else if (res.event === 'start'){
+      this.phaseEl.textContent = `starting on ${res.zone} side — jump over the box to count`;
+      this.phaseEl.classList.remove('hit');
+    } else if (res.event === 'tooFast'){
+      this.phaseEl.textContent = 'ignored a crossing — too fast to be a real rep (check box zone position)';
+      this.phaseEl.classList.remove('hit');
+    } else if (res.event === 'inBox'){
+      this.phaseEl.textContent = side ? `over the box (last: ${side})` : 'over the box';
+      this.phaseEl.classList.remove('hit');
+    } else if (res.event === 'same'){
+      this.phaseEl.textContent = `${side} side — burpee, then jump over`;
       this.phaseEl.classList.remove('hit');
     }
   }
@@ -1313,7 +1389,7 @@ document.getElementById('resetBtn').addEventListener('click', () => {
 // judge who finds better numbers doesn't have to re-enter them next test —
 // and Declan doesn't need to ship a new default just to make it stick.
 // (Real hosted page, not a Claude artifact sandbox — localStorage is fine here.)
-const REMEMBERED_FIELDS = ['exerciseName','bottomMode','bottomAngle','topAngle','floorTolerance','lungeTolerance'];
+const REMEMBERED_FIELDS = ['exerciseName','bottomMode','bottomAngle','topAngle','floorTolerance','lungeTolerance','boxWidth'];
 for (const id of REMEMBERED_FIELDS) {
   const saved = localStorage.getItem('wedgetail_' + id);
   if (saved !== null) document.getElementById(id).value = saved;
@@ -1345,7 +1421,7 @@ document.getElementById('goBtn').addEventListener('click', () => {
 // Which UI fields each counting mode needs — one place to keep this
 // consistent, now that there are 7 modes instead of the original 2.
 const TOLERANCE_LABELS = {
-  floor_deadlift: 'Ground tolerance (px)', floor_snatch: 'Ground tolerance (px)', burpee: 'Ground tolerance (px)',
+  floor_deadlift: 'Ground tolerance (px)', floor_snatch: 'Ground tolerance (px)',
   rack: 'Rack-height tolerance (px)', twist: 'Crossing margin (px)',
 };
 function updateModeUI(mode){
@@ -1357,7 +1433,7 @@ function updateModeUI(mode){
   // knee-to-ankle gap and a wrist-to-shoulder/floor gap are completely
   // different physical scales, and real gym testing showed a single shared
   // default couldn't serve both without being wildly wrong for one of them.
-  const needsTol = ['floor_deadlift', 'floor_snatch', 'rack', 'twist', 'burpee'].includes(mode);
+  const needsTol = ['floor_deadlift', 'floor_snatch', 'rack', 'twist'].includes(mode); // burpee uses its own box-zone width instead
   const needsLungeTol = mode === 'lunge';
   // Calibration is now optional for these — it adds a second, more precise
   // signal on top of knee-angle depth, but tracking works without it (see
@@ -1368,6 +1444,7 @@ function updateModeUI(mode){
   document.getElementById('floorToleranceField').style.display = needsTol ? 'flex' : 'none';
   if (needsTol) document.querySelector('#floorToleranceField label').textContent = TOLERANCE_LABELS[mode] || 'Tolerance (px)';
   document.getElementById('lungeToleranceField').style.display = needsLungeTol ? 'flex' : 'none';
+  document.getElementById('boxWidthField').style.display = mode === 'burpee' ? 'flex' : 'none';
   document.getElementById('calibrateBtn').style.display = needsCalibrate ? 'inline-block' : 'none';
   laneA.floorRefY = null; laneB.floorRefY = null; // switching modes invalidates any old calibration
 }
